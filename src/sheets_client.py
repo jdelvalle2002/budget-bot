@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -10,17 +11,34 @@ class GoogleSheetsClient:
     SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
 
     def __init__(self):
-        self.credentials_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
         self.spreadsheet_id = os.getenv("GOOGLE_SHEET_ID")
         
-        if not self.credentials_path or not self.spreadsheet_id:
-            raise ValueError("Las variables de entorno GOOGLE_APPLICATION_CREDENTIALS y GOOGLE_SHEET_ID deben estar configuradas.")
+        if not self.spreadsheet_id:
+            raise ValueError("La variable de entorno GOOGLE_SHEET_ID debe estar configurada.")
             
-        self.credentials = Credentials.from_service_account_file(
-            self.credentials_path, scopes=self.SCOPES
-        )
-        self.service = build('sheets', 'v4', credentials=self.credentials)
+        self.service = self._authenticate()
         self.sheet = self.service.spreadsheets()
+
+    def _authenticate(self):
+        """Autentica con la API de Google Sheets usando Service Account."""
+        creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+        creds_file = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+        
+        if creds_json:
+            # Si estamos en Render, leemos el JSON directamente de la variable de entorno
+            creds_dict = json.loads(creds_json)
+            creds = Credentials.from_service_account_info(
+                creds_dict, scopes=self.SCOPES
+            )
+        elif creds_file:
+            # Si estamos en local, leemos del archivo credentials.json
+            creds = Credentials.from_service_account_file(
+                creds_file, scopes=self.SCOPES
+            )
+        else:
+            raise ValueError("No se encontraron credenciales de Google (ni archivo ni variable de entorno).")
+
+        return build('sheets', 'v4', credentials=creds)
 
     def _get_existing_transaction_ids(self, range_name: str = "Gastos!A:A") -> set:
         """
