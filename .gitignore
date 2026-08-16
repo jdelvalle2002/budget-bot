@@ -26,6 +26,9 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+budget-bot-sa@budget-bot-505715.iam.gserviceaccount.com
+
+
 # Environment
 .env
 .venv
@@ -42,6 +45,7 @@ venv.bak/
 *.db
 *.sqlite
 *.sqlite3
+Platas.xlsx
 
 # Logs
 logs/

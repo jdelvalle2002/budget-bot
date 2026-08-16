@@ -1,0 +1,90 @@
+{
+  "Alimentación": [
+    "feria",
+    "desayuno",
+    "lider",
+    "super",
+    "líder",
+    "jumbo",
+    "tottus",
+    "comida",
+    "almuerzo",
+    "rappi",
+    "pedidos ya",
+    "kfc",
+    "helado",
+    "pan",
+    "fruta",
+    "verdura",
+    "empanada",
+    "snack",
+    "completo",
+    "cena",
+    "uber eats"
+  ],
+  "Deportes": [
+    "cancha"
+  ],
+  "Hogar": [
+    "detergente",
+    "toallitas"
+  ],
+  "Inversiones": [
+    "racional",
+    "fintual",
+    "mercadopago"
+  ],
+  "Mesada": [
+    "mesada"
+  ],
+  "Salidas": [
+    "barbazul",
+    "bar",
+    "asado",
+    "cine",
+    "salida",
+    "fiesta",
+    "entrada",
+    "estadio",
+    "ballet",
+    "pichanga",
+    "carrete"
+  ],
+  "Salud": [
+    "psico",
+    "cverde",
+    "cruz verde",
+    "farmacia",
+    "medico",
+    "bloqueador",
+    "psicologo"
+  ],
+  "Telefonía": [
+    "wom",
+    "entel"
+  ],
+  "Transporte": [
+    "uber",
+    "didi",
+    "cabify",
+    "buses",
+    "pasaje",
+    "tne",
+    "merval",
+    "bici",
+    "metro"
+  ],
+  "Remuneraciones": [
+    "sueldo",
+    "pago",
+    "práctica",
+    "bono",
+    "transferencia"
+  ],
+  "Otros Gastos": [
+    "regalo",
+    "cajero",
+    "poleron",
+    "ropa"
+  ]
+}
