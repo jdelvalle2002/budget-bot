@@ -1,0 +1,24 @@
+# Core Data Stack
+pandas>=2.0.0
+numpy>=1.24.0
+
+# API / Backend
+fastapi>=0.100.0
+uvicorn>=0.23.0
+pydantic>=2.0.0
+
+# Env management
+python-dotenv>=1.0.0
+
+# Google API (for Sheets/Drive integration)
+google-api-python-client>=2.0.0
+google-auth-httplib2>=0.1.0
+google-auth-oauthlib>=1.0.0
+
+# Telegram Bot API (if using Telegram)
+python-telegram-bot>=20.0.0
+
+# Testing & formatting
+pytest>=7.0.0
+black>=23.0.0
+flake8>=6.0.0
