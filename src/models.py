@@ -1,9 +1,16 @@
 from pydantic import BaseModel, Field, field_validator
 from decimal import Decimal
 from typing import Optional
-from datetime import date
+from datetime import date, datetime
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
 from enum import Enum
 import uuid
+
+def get_hoy_santiago() -> date:
+    return datetime.now(ZoneInfo("America/Santiago")).date()
 
 class TipoTransaccion(str, Enum):
     INGRESO = "Ingreso"
@@ -18,7 +25,7 @@ class MetodoPago(str, Enum):
 
 class Transaction(BaseModel):
     id_transaccion: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    fecha: date = Field(default_factory=date.today)
+    fecha: date = Field(default_factory=get_hoy_santiago)
     tipo: TipoTransaccion
     monto: Decimal
     concepto: str
@@ -29,7 +36,7 @@ class Transaction(BaseModel):
     @field_validator('fecha')
     @classmethod
     def fecha_dentro_de_rango(cls, v: date) -> date:
-        hoy = date.today()
+        hoy = get_hoy_santiago()
         if v > hoy:
             raise ValueError('No puedes registrar gastos o ingresos en el futuro.')
         diferencia = (hoy - v).days

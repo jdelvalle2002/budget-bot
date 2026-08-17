@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from google import genai
 from google.genai import types
 
-from src.models import Transaction, TipoTransaccion, MetodoPago
+from src.models import Transaction, TipoTransaccion, MetodoPago, get_hoy_santiago
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ def try_fast_path(text: str, message_id: str) -> ParseResult | None:
             if concepto_str in palabras:
                 tx = Transaction(
                     id_transaccion=message_id,
-                    fecha=date.today(),
+                    fecha=get_hoy_santiago(),
                     tipo=TipoTransaccion.GASTO,
                     monto=Decimal(monto_str),
                     concepto=concepto_str.capitalize(),
@@ -55,7 +55,7 @@ def try_fast_path(text: str, message_id: str) -> ParseResult | None:
     return None
 
 def get_system_prompt() -> str:
-    hoy = date.today().isoformat()
+    hoy = get_hoy_santiago().isoformat()
     return f"""
 Eres un asistente financiero experto. Tu tarea es extraer información estructurada a partir de mensajes de texto coloquiales.
 Debes devolver un JSON estricto que cumpla con el esquema requerido.
@@ -95,7 +95,7 @@ def parse_transaction_message(text: str, message_id: str) -> ParseResult:
     # 1. Intentar Vía Rápida (Ahorra LLM)
     fast_result = try_fast_path(text, message_id)
     if fast_result:
-        logger.info(f"FAST-PATH ACTIVADO para el mensaje: '{text}'")
+        logger.info(f"FAST-PATH ACTIVADO para el mensaje (ID: {message_id})")
         return fast_result
 
     # 2. Fallback a Inteligencia Artificial
@@ -113,7 +113,7 @@ def parse_transaction_message(text: str, message_id: str) -> ParseResult:
                 system_instruction=get_system_prompt(),
                 response_mime_type="application/json",
                 response_schema=TransactionExtraction,
-                temperature=0.0
+                temperature=0.01
             )
         )
         
@@ -128,7 +128,7 @@ def parse_transaction_message(text: str, message_id: str) -> ParseResult:
         opciones_categoria = extracted_data.pop("opciones_categoria", [])
         
         fecha_str = extracted_data.pop("fecha", None)
-        fecha_tx = date.today()
+        fecha_tx = get_hoy_santiago()
         if fecha_str:
             if isinstance(fecha_str, str):
                 fecha_tx = date.fromisoformat(fecha_str)
@@ -142,7 +142,33 @@ def parse_transaction_message(text: str, message_id: str) -> ParseResult:
         )
         
         return ParseResult(transaction=tx, es_ambiguo=es_ambiguo, opciones_categoria=opciones_categoria)
-        
+
+    except ValueError as ve:
+        # Errores lanzados manualmente (ej. 'es_transaccion' == False)
+        raise ve
     except Exception as e:
+        # Verificar si es un ValidationError de Pydantic (usamos el nombre de clase por si cambia el import)
+        if e.__class__.__name__ == 'ValidationError':
+            errores_legibles = []
+            for err in e.errors(): # type: ignore
+                campo = err.get('loc', ['desconocido'])[0]
+                msg = err.get('msg', '')
+                
+                # Limpiar los textos de Pydantic
+                if err.get('type') == 'missing':
+                    msg = "Falta este dato o no lo mencionaste claramente."
+                elif msg.startswith("Value error, "):
+                    msg = msg.replace("Value error, ", "")
+                
+                # Traducir los campos para el usuario
+                if campo == 'monto':
+                    errores_legibles.append(f"💰 Monto: {msg}")
+                elif campo == 'fecha':
+                    errores_legibles.append(f"📅 Fecha: {msg}")
+                else:
+                    errores_legibles.append(f"📝 {str(campo).capitalize()}: {msg}")
+            
+            raise ValueError("Me faltaron datos o hubo un error de formato:\n" + "\n".join(errores_legibles))
+        
         logger.error(f"Error procesando mensaje con Gemini: {e}")
         raise ValueError(f"Fallo en la IA al intentar parsear el mensaje. ¿Es muy confuso? Error interno: {e}")

@@ -141,7 +141,83 @@ class GoogleSheetsClient:
         except Exception as e:
             logger.error(f"Error al actualizar la fila {row_index}: {e}")
             return False
+    def get_last_transactions(self, limit: int = 5, sheet_name: str = "Gastos") -> list[dict]:
+        """Devuelve las últimas N transacciones registradas (útil para el bot de Telegram)."""
+        range_name = f"{sheet_name}!A:H"
+        try:
+            result = self.sheet.values().get(
+                spreadsheetId=self.spreadsheet_id,
+                range=range_name
+            ).execute()
+            values = result.get('values', [])
+            
+            if not values or len(values) <= 1:
+                return []
+                
+            # Asumimos que la fila 0 es el encabezado
+            filas_datos = values[1:]
+            
+            # Limpiar filas vacías
+            filas_datos = [row for row in filas_datos if len(row) > 0 and str(row[0]).strip() != ""]
+            
+            ultimas = filas_datos[-limit:]
+            transacciones = []
+            
+            for row in ultimas:
+                if len(row) >= 6: # Asegurar que tiene hasta la categoría mínimo
+                    try:
+                        monto = float(str(row[3]).replace(',', ''))
+                    except ValueError:
+                        monto = 0
+                        
+                    tx = {
+                        "id": row[0],
+                        "fecha": row[1],
+                        "tipo": row[2],
+                        "monto": monto,
+                        "concepto": row[4],
+                        "categoria": row[5],
+                        "metodo": row[6] if len(row) > 6 else "Desconocido"
+                    }
+                    transacciones.append(tx)
+            
+            return transacciones
+        except Exception as e:
+            logger.error(f"Error obteniendo últimas transacciones: {e}")
+            return []
 
+    def get_current_month_summary(self, sheet_name: str = "Gastos") -> dict:
+        """Agrupa los gastos del mes en curso por categoría."""
+        from src.models import get_hoy_santiago
+        hoy = get_hoy_santiago()
+        mes_actual = f"{hoy.year}-{hoy.month:02d}" # Ej: "2026-08"
+        
+        range_name = f"{sheet_name}!A:H"
+        try:
+            result = self.sheet.values().get(
+                spreadsheetId=self.spreadsheet_id,
+                range=range_name
+            ).execute()
+            values = result.get('values', [])
+            
+            resumen = {}
+            for row in values[1:]: # Saltar encabezado
+                if len(row) >= 6:
+                    fecha_str = row[1]
+                    tipo = row[2]
+                    monto_str = str(row[3]).replace(',', '')
+                    categoria = row[5]
+                    
+                    if fecha_str.startswith(mes_actual) and tipo.lower() == "gasto":
+                        try:
+                            monto = float(monto_str)
+                            resumen[categoria] = resumen.get(categoria, 0) + monto
+                        except ValueError:
+                            continue
+            return resumen
+        except Exception as e:
+            logger.error(f"Error generando resumen: {e}")
+            return {}
     def delete_transaction(self, id_transaccion: str, sheet_name: str = "Gastos") -> bool:
         """Borra la fila de una transacción de forma definitiva."""
         row_index = self._find_row_index(id_transaccion, sheet_name)
