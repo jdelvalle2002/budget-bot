@@ -26,6 +26,17 @@ class Transaction(BaseModel):
     metodo: MetodoPago = MetodoPago.DEBITO
     comentarios: Optional[str] = ""
 
+    @field_validator('fecha')
+    @classmethod
+    def fecha_dentro_de_rango(cls, v: date) -> date:
+        hoy = date.today()
+        if v > hoy:
+            raise ValueError('No puedes registrar gastos o ingresos en el futuro.')
+        diferencia = (hoy - v).days
+        if diferencia > 45:
+            raise ValueError(f'El gasto es demasiado antiguo ({diferencia} días). El límite es de 45 días.')
+        return v
+
     @field_validator('monto')
     @classmethod
     def monto_debe_ser_positivo(cls, v: Decimal) -> Decimal:

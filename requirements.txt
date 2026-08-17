@@ -24,3 +24,6 @@ python-telegram-bot>=20.0.0
 pytest>=7.0.0
 black>=23.0.0
 flake8>=6.0.0
+
+# Inteligencia Artificial
+google-genai>=0.2.0

@@ -8,13 +8,50 @@ import random
 load_dotenv()
 
 def test_flujo():
-    print("1. Probando el Parser...")
-    mensajes = ["15000 transferencia deuda carrete", "10000 uber eats", "20000 맥주", "100000 bono"]
+    print("1. Probando el Parser con Inteligencia Artificial (Gemini)...")
+    mensajes = [
+        "ayer me gasté 15 lucas en unas cervezas pagadas con crédito",
+        "me devolvieron 10 lucas de la fiesta de ayer",
+        "7 gambas en pan pal desayuno",
+        "hace 3 días pagué el internet de la casa, 20k con debito",
+        "el lunes pasado transferí 50 lucas para la cuota de la cancha",
+        "compré una entrada al cine para mañana por 8000 en efectivo", # Test: Gasto futuro (debería fallar o extraer hoy si asume la compra hoy)
+        "15000 de bencina didi efectivo",
+        "me pagaron el sueldo 500k por transferencia el viernes pasado",
+        "reembolso de 45000 por la consulta médica de la semana pasada",
+        "gaste 45 lucas en el super líder pagado con la de credito ayer",
+        "transferí 20 lucas para el asado del sábado",
+        "hace exactamente un mes compré un poleron a 30 lucas", # Test: 30 días, justo al borde
+        "en diciembre de 2021 gasté 50k en regalos", # Test: Gasto muy antiguo (debería fallar la validación de 45 días)
+        "15k propina uber eats efectivo ayer en la noche",
+        "me cobraron la suscripción de fintual hoy 20 lucas",
+        "10 luquitas pa la junta de hoy, transferencia",
+        "ayer me comí un completo en la calle, 2500 efec",
+        "pagué 40k en el cruz verde por medicamentos hace 5 días",
+        "me robaron 15 lucas de la billetera ayer",
+        "pagué la cuenta de wom 12k con debito",
+        "compré verduras en la feria por 15000 al contado ayer en la mañana",
+        "30 lucas pa la mesada del mes pasado por transferencia",
+        "hace 2 semanas me gasté 80 lucas en ropa deportiva con crédito",
+        "mañana me pagarán 100k del bono", # Test: Ingreso en el futuro (debería fallar)
+        "2k metro bip",
+        "10 lucas de detergente y toallitas en el jumbo, débito hace 2 días",
+        "transferencia de 50k a racional ayer",
+        "me regalaron 20 lucas por mi cumpleaños el finde",
+        "pagué 15k al psicologo hoy con transfe",
+        "4 lucas en helado ayer en la tarde"
+    ]
     texto_prueba = random.choice(mensajes)
     print(f"Texto a parsear: '{texto_prueba}'")
     transaction_id = random.randint(1000, 2000)
-    transaction = parse_transaction_message(texto_prueba, message_id="TEST-" + str(transaction_id))
-    print(f"Transacción parseada: {transaction.model_dump()}")
+    parse_result = parse_transaction_message(texto_prueba, message_id="TEST-" + str(transaction_id))
+    transaction = parse_result.transaction
+    
+    if parse_result.es_ambiguo:
+        print(f"\n⚠️ CASO AMBIGUO DETECTADO: Gemini no está seguro.")
+        print(f"Opciones propuestas: {parse_result.opciones_categoria}")
+    else:
+        print(f"\nTransacción parseada: {transaction.model_dump()}")
     
     print("\n2. Probando conexión a Google Sheets...")
     try:

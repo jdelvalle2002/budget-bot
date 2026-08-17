@@ -23,11 +23,16 @@
     "uber eats"
   ],
   "Deportes": [
-    "cancha"
+    "cancha",
+    "raqueta",
+    "encordado",
+    "tenis"
   ],
   "Hogar": [
     "detergente",
-    "toallitas"
+    "toallitas",
+    "lavaloza",
+    "jabón"
   ],
   "Inversiones": [
     "racional",
