@@ -172,3 +172,42 @@ def parse_transaction_message(text: str, message_id: str) -> ParseResult:
         
         logger.error(f"Error procesando mensaje con Gemini: {e}")
         raise ValueError(f"Fallo en la IA al intentar parsear el mensaje. ¿Es muy confuso? Error interno: {e}")
+
+def responder_consulta_natural(pregunta: str, datos_json: str) -> str:
+    """
+    Toma una pregunta financiera y un historial de transacciones en JSON,
+    y utiliza Gemini para generar una respuesta analítica.
+    """
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError("La variable GEMINI_API_KEY no está configurada.")
+        
+    client = genai.Client(api_key=api_key)
+    
+    hoy = get_hoy_santiago().isoformat()
+    
+    prompt_sistema = f"""
+Eres el analista financiero personal del usuario. 
+HOY ES: {hoy}.
+Te daré un JSON con el historial reciente de transacciones de Google Sheets del usuario.
+Tu tarea es responder a la pregunta analítica del usuario de forma amigable, clara, breve y matemáticamente precisa usando los datos proveídos.
+Puedes calcular sumas, identificar promedios, o encontrar gastos específicos.
+Si la información no está en el JSON, díselo de forma honesta. No inventes datos.
+Usa emojis para hacer la respuesta más amigable.
+Responde directamente, sin usar markdown extra de código JSON o saludos muy formales.
+"""
+    try:
+        chat = client.chats.create(
+            model='gemini-flash-lite-latest',
+            config=types.GenerateContentConfig(
+                system_instruction=prompt_sistema,
+                temperature=0.1
+            )
+        )
+        
+        contexto = f"DATOS DE TRANSACCIONES (JSON):\n{datos_json}\n\nPREGUNTA DEL USUARIO:\n{pregunta}"
+        response = chat.send_message(contexto)
+        return str(response.text)
+    except Exception as e:
+        logger.error(f"Error en consulta natural: {e}")
+        raise ValueError("Lo siento, mis circuitos analíticos fallaron al procesar tantos datos. Intenta nuevamente.")

@@ -246,14 +246,35 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
     saludos = ["hola", "buenas", "buenos dias", "buenos días", "buenas tardes", "buenas noches", "/start", "start", "hello"]
     if texto_limpio in saludos:
         mensaje_bienvenida = (
-            "¡Hola! 👋 Soy tu Bot Financiero Personal.\n\n"
-            "Escríbeme tus gastos o ingresos de forma natural y yo los registraré en tu Google Sheets.\n\n"
+            "¡Hola! 👋 Soy tu Bot Financiero.\n"
+            "Dime qué gastaste o ingresaste y yo lo anotaré en tu planilla.\n"
             "Ejemplos:\n"
-            "🍕 _15000 en pizza con débito_\n"
-            "🚖 _5 lucas de uber_ \n"
-            "💰 _me pagaron el sueldo 500k por transfe_"
+            "• _'Gasté 15000 en uber'_\n"
+            "• _'Me pagaron 50 lucas que me debían'_\n"
+            "• _'? cuánto he gastado en transporte este mes'_"
         )
         await enviar_mensaje_telegram(chat_id, mensaje_bienvenida)
+        return
+
+    # Comandos Analíticos (NLQ)
+    if texto_limpio.startswith("/consulta ") or texto_limpio.startswith("? ") or texto_limpio.startswith("?"):
+        pregunta = text.replace("/consulta", "").lstrip("? ").strip()
+        if not pregunta:
+            await enviar_mensaje_telegram(chat_id, "ℹ️ Por favor escribe tu pregunta después de `/consulta` o `?`.\nEjemplo: `? cuánto gasté en comida la semana pasada`")
+            return
+            
+        await enviar_mensaje_telegram(chat_id, "⏳ Analizando tu historial (esto tomará unos segundos)...")
+        ultimas_transacciones = sheets_client.get_last_transactions(limit=1000)
+        
+        import json
+        datos_json = json.dumps(ultimas_transacciones, ensure_ascii=False)
+        
+        try:
+            from src.parser import responder_consulta_natural
+            respuesta_ai = responder_consulta_natural(pregunta, datos_json)
+            await enviar_mensaje_telegram(chat_id, f"💡 *Analista Financiero:*\n\n{respuesta_ai}")
+        except Exception as e:
+            await enviar_mensaje_telegram(chat_id, f"❌ Hubo un error procesando tu consulta: {e}")
         return
 
     try:
