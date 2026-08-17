@@ -7,6 +7,8 @@ import random
 # Cargar las variables de entorno para que lea credentials.json y el Sheet ID
 load_dotenv()
 
+import sys
+
 def test_flujo():
     print("1. Probando el Parser con Inteligencia Artificial (Gemini)...")
     mensajes = [
@@ -39,10 +41,20 @@ def test_flujo():
         "transferencia de 50k a racional ayer",
         "me regalaron 20 lucas por mi cumpleaños el finde",
         "pagué 15k al psicologo hoy con transfe",
-        "4 lucas en helado ayer en la tarde"
+        "4 lucas en helado ayer en la tarde",
+        "10 luquitas en cervezas del super", # Ambiguo: Alimentación vs Salidas
+        "compré un regalo de cumple por 15k con credito", # Ambiguo: Otros Gastos vs Salidas
+        "pagué 8 lucas de uber para ir al estadio", # Ambiguo: Transporte vs Salidas vs Deportes
+        "30 lucas en unas zapatillas deportivas nuevas", # Ambiguo: Deportes vs Otros Gastos
+        "1500 en un café antes de entrar a clases" # Ambiguo: Alimentación vs Salidas
     ]
-    texto_prueba = random.choice(mensajes)
-    print(f"Texto a parsear: '{texto_prueba}'")
+    
+    if len(sys.argv) > 1:
+        texto_prueba = " ".join(sys.argv[1:])
+    else:
+        texto_prueba = random.choice(mensajes)
+        
+    print(f"\nTexto a parsear: '{texto_prueba}'")
     transaction_id = random.randint(1000, 2000)
     parse_result = parse_transaction_message(texto_prueba, message_id="TEST-" + str(transaction_id))
     transaction = parse_result.transaction

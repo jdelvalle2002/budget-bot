@@ -44,7 +44,7 @@ def try_fast_path(text: str, message_id: str) -> ParseResult | None:
                 tx = Transaction(
                     id_transaccion=message_id,
                     fecha=date.today(),
-                    tipo=TipoTransaccion.EGRESO,
+                    tipo=TipoTransaccion.GASTO,
                     monto=Decimal(monto_str),
                     concepto=concepto_str.capitalize(),
                     categoria=categoria,
@@ -63,19 +63,21 @@ Debes devolver un JSON estricto que cumpla con el esquema requerido.
 HOY ES: {hoy}. Usa esta fecha de referencia estricta para cálculos de tiempo como "ayer", "el martes pasado", "hace 3 días".
 
 Reglas de negocio:
-1. 'monto': Debe ser un número entero o decimal positivo. Si el usuario menciona "lucas" o "k" (en Chile), asume miles. Si dice "gambas", son cientos. Si es un reembolso, el monto sigue siendo positivo pero el tipo cambia.
-2. 'tipo': Debe ser estrictamente "Ingreso" o "Egreso". (Si fue un gasto, es Egreso. Si dice "me pagaron", "sueldo", "reembolso", "devolución", es Ingreso).
-3. 'concepto': Breve resumen de la transacción en 1 o 2 palabras (ej. "Uber", "Cerveza", "Sueldo", "Deuda Pedro").
-4. 'categoria': DEBE ser EXACTAMENTE una de las siguientes opciones textuales: {CATEGORIAS_DISPONIBLES}.
-5. 'metodo': Debe ser "Débito", "Crédito", "Efectivo", "Transferencia", o "Otro". Si no menciona, asume "Débito".
-6. 'fecha': Deduce la fecha exacta en formato YYYY-MM-DD. Si no hay referencia, asume {hoy}.
-7. 'comentarios': Opcional, guarda notas extra.
-8. 'es_ambiguo': Si el gasto puede encajar razonablemente en dos o más categorías distintas (por ejemplo, "4 lucas de helado" puede ser 'Alimentación' o 'Salidas'), debes marcar esto como true.
-9. 'opciones_categoria': Si marcaste 'es_ambiguo' como true, debes enviar un arreglo con las 2 opciones de categoría más probables sacadas estrictamente de {CATEGORIAS_DISPONIBLES}. Si es_ambiguo es false, devuelve un arreglo vacío.
+1. 'es_transaccion': Evalúa si el texto relata un gasto o ingreso REAL Y PROPIO del usuario. Si es una historia sobre otra persona (ej. "mi amigo gastó...", "él me contó..."), una conversación general, o spam, marca esto como false.
+2. 'monto': Debe ser un número entero o decimal positivo. Si el usuario menciona "lucas" o "k" (en Chile), asume miles. Si dice "gambas", son cientos. Si dice "quinas" es quinientos. Si es un reembolso, el monto sigue siendo positivo pero el tipo cambia.
+3. 'tipo': Debe ser estrictamente "Ingreso" o "Gasto". (Si fue un Egreso, es gasto. Si dice "me pagaron", "sueldo", "reembolso", "devolución", es Ingreso).
+4. 'concepto': Breve resumen de la transacción en 1 o 2 palabras (ej. "Uber", "Cerveza", "Sueldo", "Deuda Pedro").
+5. 'categoria': DEBE ser EXACTAMENTE una de las siguientes opciones textuales: {CATEGORIAS_DISPONIBLES}.
+6. 'metodo': Debe ser "Débito", "Crédito", "Efectivo", "Transferencia", o "Otro". Si no menciona, asume "Débito".
+7. 'fecha': Deduce la fecha exacta en formato YYYY-MM-DD. Si no hay referencia, asume {hoy}. Debes tener cuidado, la compra puede aludir al futuro pero haber ocurrido en el presente o pasado. Por ejemplo puedo comprar algo hoy para una actividad de la próxima semana.
+8. 'comentarios': Opcional, guarda notas extra para entender el movimiento al revisar los datos.
+9. 'es_ambiguo': Si el gasto puede encajar razonablemente en dos o más categorías distintas (por ejemplo, "4 lucas de helado" o "10k cervezas" pueden ser 'Alimentación' o 'Salidas', "regalo" puede ser 'Otros Gastos' o 'Mesada', "15k uber al estadio" puede ser 'Transporte' o 'Salidas'), debes marcar esto como true.
+10. 'opciones_categoria': Si marcaste 'es_ambiguo' como true, debes enviar un arreglo con las 2 opciones de categoría más probables sacadas estrictamente de {CATEGORIAS_DISPONIBLES}. Si es_ambiguo es false, devuelve un arreglo vacío.
 """
 
 class TransactionExtraction(BaseModel):
     """Esquema de respuesta esperado de Gemini."""
+    es_transaccion: bool = True
     tipo: TipoTransaccion
     monto: Decimal
     concepto: str
@@ -117,6 +119,10 @@ def parse_transaction_message(text: str, message_id: str) -> ParseResult:
         
         response = chat.send_message(f"Extrae los datos de esta transacción: '{text}'")
         extracted_data = json.loads(response.text)
+        
+        es_transaccion = extracted_data.pop("es_transaccion", True)
+        if not es_transaccion:
+            raise ValueError("El mensaje no parece ser un gasto o ingreso tuyo. (A lo mejor me estabas contando una historia o saludando 👋)")
         
         es_ambiguo = extracted_data.pop("es_ambiguo", False)
         opciones_categoria = extracted_data.pop("opciones_categoria", [])

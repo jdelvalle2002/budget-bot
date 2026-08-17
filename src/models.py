@@ -7,7 +7,7 @@ import uuid
 
 class TipoTransaccion(str, Enum):
     INGRESO = "Ingreso"
-    EGRESO = "Egreso"
+    GASTO = "Gasto"
 
 class MetodoPago(str, Enum):
     DEBITO = "Débito"
@@ -41,7 +41,7 @@ class Transaction(BaseModel):
     @classmethod
     def monto_debe_ser_positivo(cls, v: Decimal) -> Decimal:
         if v <= 0:
-            raise ValueError('El monto debe ser estrictamente positivo. Usa el campo "tipo" para definir si es ingreso o egreso.')
+            raise ValueError('El monto debe ser estrictamente positivo. Usa el campo "tipo" para definir si es ingreso o gasto.')
         return v
     
     def to_row(self) -> list:

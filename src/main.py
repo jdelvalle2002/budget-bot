@@ -83,6 +83,21 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         return
 
     # --- FLUJO 2: MENSAJE NUEVO ---
+    # Interceptar saludos básicos y comandos de inicio sin llamar a la IA
+    texto_limpio = text.strip().lower()
+    saludos = ["hola", "buenas", "buenos dias", "buenos días", "buenas tardes", "buenas noches", "/start", "start", "hello"]
+    if texto_limpio in saludos:
+        mensaje_bienvenida = (
+            "¡Hola! 👋 Soy tu Bot Financiero Personal.\n\n"
+            "Escríbeme tus gastos o ingresos de forma natural y yo los registraré en tu Google Sheets.\n\n"
+            "Ejemplos:\n"
+            "🍕 _15000 en pizza con débito_\n"
+            "🚖 _5 lucas de uber_ \n"
+            "💰 _me pagaron el sueldo 500k por transfe_"
+        )
+        await enviar_mensaje_telegram(chat_id, mensaje_bienvenida)
+        return
+
     try:
         parse_result = parse_transaction_message(text, message_id=message_id)
         
@@ -106,7 +121,10 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             # Procesamiento directo
             success = sheets_client.append_transaction(parse_result.transaction)
             if success:
-                respuesta = f"✅ Registrado exitosamente:\n- *Monto:* ${parse_result.transaction.monto:,.0f}\n- *Categoría:* {parse_result.transaction.categoria}\n- *Tipo:* {parse_result.transaction.tipo.value}"
+                respuesta = f"✅ Registrado exitosamente:\n- *Monto:* ${parse_result.transaction.monto:,.0f}\n- *Categoría:* {parse_result.transaction.categoria}\n- *Tipo:* {parse_result.transaction.tipo.value}\
+                    \n- *Fecha:* {parse_result.transaction.fecha}\
+                    \n- *Metodo:* {parse_result.transaction.metodo}\
+                    \n- *Concepto:* {parse_result.transaction.concepto}"
                 await enviar_mensaje_telegram(chat_id, respuesta)
             else:
                 await enviar_mensaje_telegram(chat_id, "❌ Error guardando en Google Sheets.")
