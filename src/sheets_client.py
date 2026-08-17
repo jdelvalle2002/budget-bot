@@ -141,6 +141,27 @@ class GoogleSheetsClient:
         except Exception as e:
             logger.error(f"Error al actualizar la fila {row_index}: {e}")
             return False
+
+    def append_multiple_transactions(self, transactions: list, sheet_name: str = "Gastos") -> bool:
+        """Añade múltiples transacciones de una sola vez."""
+        if not transactions:
+            return True
+        range_name = f"{sheet_name}!A:H"
+        try:
+            values = [tx.to_row() for tx in transactions]
+            body = {'values': values}
+            result = self.sheet.values().append(
+                spreadsheetId=self.spreadsheet_id,
+                range=range_name,
+                valueInputOption="USER_ENTERED",
+                insertDataOption="INSERT_ROWS",
+                body=body
+            ).execute()
+            logger.info(f"Múltiples filas añadidas.")
+            return True
+        except Exception as e:
+            logger.error(f"Error al añadir múltiples transacciones: {e}")
+            return False
     def get_last_transactions(self, limit: int = 5, sheet_name: str = "Gastos") -> list[dict]:
         """Devuelve las últimas N transacciones registradas (útil para el bot de Telegram)."""
         range_name = f"{sheet_name}!A:H"

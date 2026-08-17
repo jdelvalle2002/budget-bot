@@ -277,6 +277,37 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             await enviar_mensaje_telegram(chat_id, f"❌ Hubo un error procesando tu consulta: {e}")
         return
 
+    # Registro Múltiple (/multi)
+    if texto_limpio.startswith("/multi ") or texto_limpio == "/multi":
+        texto_multi = text.replace("/multi", "", 1).strip()
+        if not texto_multi:
+            await enviar_mensaje_telegram(chat_id, "ℹ️ Escribe tus gastos después del comando.\nEjemplo: `/multi 15k uber, 50k super`")
+            return
+            
+        await enviar_mensaje_telegram(chat_id, "⏳ Procesando múltiples registros...")
+        try:
+            from src.parser import parse_multi_transaction_message
+            transacciones = parse_multi_transaction_message(texto_multi, base_message_id=f"TG-{message_id}")
+            
+            if not transacciones:
+                await enviar_mensaje_telegram(chat_id, "❌ No encontré gastos válidos en tu mensaje.")
+                return
+                
+            success = sheets_client.append_multiple_transactions(transacciones)
+            if success:
+                resumen_lineas = [f"✅ *{len(transacciones)} Registros guardados:*"]
+                for tx in transacciones:
+                    emoji = "🔴" if str(tx.tipo.value).lower() == "gasto" else "🟢"
+                    resumen_lineas.append(f"- {emoji} {tx.categoria}: ${tx.monto:,.0f} ({tx.concepto})")
+                resumen_lineas.append("\n_(Usa `/ultimas` si necesitas editar alguno)_")
+                
+                await enviar_mensaje_telegram(chat_id, "\n".join(resumen_lineas))
+            else:
+                await enviar_mensaje_telegram(chat_id, "❌ Error guardando en Google Sheets.")
+        except ValueError as e:
+            await enviar_mensaje_telegram(chat_id, f"⚠️ Error en registro múltiple:\n_{str(e)}_")
+        return
+
     try:
         parse_result = parse_transaction_message(text, message_id=f"TG-{message_id}")
         

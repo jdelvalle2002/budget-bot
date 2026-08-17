@@ -88,6 +88,10 @@ class TransactionExtraction(BaseModel):
     es_ambiguo: bool = False
     opciones_categoria: list[str] = []
 
+class MultiTransactionExtraction(BaseModel):
+    """Esquema para extraer múltiples transacciones."""
+    transacciones: list[TransactionExtraction]
+
 def parse_transaction_message(text: str, message_id: str) -> ParseResult:
     """
     Parsea un mensaje de texto usando Regex o Gemini AI y devuelve un ParseResult.
@@ -118,7 +122,11 @@ def parse_transaction_message(text: str, message_id: str) -> ParseResult:
         )
         
         response = chat.send_message(f"Extrae los datos de esta transacción: '{text}'")
-        extracted_data = json.loads(response.text)
+        
+        try:
+            extracted_data = json.loads(response.text)
+        except json.JSONDecodeError:
+            raise ValueError("La Inteligencia Artificial se confundió y no devolvió un formato válido. ¿Podrías redactar tu gasto de forma más clara?")
         
         es_transaccion = extracted_data.pop("es_transaccion", True)
         if not es_transaccion:
@@ -131,7 +139,10 @@ def parse_transaction_message(text: str, message_id: str) -> ParseResult:
         fecha_tx = get_hoy_santiago()
         if fecha_str:
             if isinstance(fecha_str, str):
-                fecha_tx = date.fromisoformat(fecha_str)
+                try:
+                    fecha_tx = date.fromisoformat(fecha_str)
+                except ValueError:
+                    pass
             else:
                 fecha_tx = fecha_str
         
@@ -144,7 +155,7 @@ def parse_transaction_message(text: str, message_id: str) -> ParseResult:
         return ParseResult(transaction=tx, es_ambiguo=es_ambiguo, opciones_categoria=opciones_categoria)
 
     except ValueError as ve:
-        # Errores lanzados manualmente (ej. 'es_transaccion' == False)
+        # Errores lanzados manualmente (ej. 'es_transaccion' == False o JSONDecodeError convertido)
         raise ve
     except Exception as e:
         # Verificar si es un ValidationError de Pydantic (usamos el nombre de clase por si cambia el import)
@@ -154,24 +165,30 @@ def parse_transaction_message(text: str, message_id: str) -> ParseResult:
                 campo = err.get('loc', ['desconocido'])[0]
                 msg = err.get('msg', '')
                 
-                # Limpiar los textos de Pydantic
+                # Limpiar los textos técnicos de Pydantic
                 if err.get('type') == 'missing':
                     msg = "Falta este dato o no lo mencionaste claramente."
                 elif msg.startswith("Value error, "):
                     msg = msg.replace("Value error, ", "")
+                elif "Input should be a valid" in msg or "Input should be" in msg:
+                    msg = "Valor no reconocido o formato incorrecto."
                 
                 # Traducir los campos para el usuario
                 if campo == 'monto':
                     errores_legibles.append(f"💰 Monto: {msg}")
                 elif campo == 'fecha':
                     errores_legibles.append(f"📅 Fecha: {msg}")
+                elif campo == 'categoria':
+                    errores_legibles.append(f"📁 Categoría: {msg}")
+                elif campo == 'tipo':
+                    errores_legibles.append(f"🔄 Tipo: {msg}")
                 else:
                     errores_legibles.append(f"📝 {str(campo).capitalize()}: {msg}")
             
             raise ValueError("Me faltaron datos o hubo un error de formato:\n" + "\n".join(errores_legibles))
         
         logger.error(f"Error procesando mensaje con Gemini: {e}")
-        raise ValueError(f"Fallo en la IA al intentar parsear el mensaje. ¿Es muy confuso? Error interno: {e}")
+        raise ValueError("Fallo en la IA al intentar procesar el mensaje. Inténtalo de nuevo.")
 
 def responder_consulta_natural(pregunta: str, datos_json: str) -> str:
     """
@@ -211,3 +228,77 @@ Responde directamente, sin usar markdown extra de código JSON o saludos muy for
     except Exception as e:
         logger.error(f"Error en consulta natural: {e}")
         raise ValueError("Lo siento, mis circuitos analíticos fallaron al procesar tantos datos. Intenta nuevamente.")
+
+def parse_multi_transaction_message(text: str, base_message_id: str) -> list[Transaction]:
+    """
+    Parsea un mensaje que contiene múltiples gastos usando Gemini.
+    Asigna IDs secuenciales basados en el base_message_id.
+    Fuerza a Gemini a resolver ambigüedades sin preguntar al usuario.
+    """
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError("La variable GEMINI_API_KEY no está configurada.")
+        
+    client = genai.Client(api_key=api_key)
+    
+    prompt_multi = get_system_prompt()
+    prompt_multi += "\n\nREGLA ESPECIAL PARA MÚLTIPLES REGISTROS:\n"
+    prompt_multi += "El usuario enviará múltiples transacciones en un solo mensaje.\n"
+    prompt_multi += "Debes extraer TODAS en el arreglo 'transacciones'.\n"
+    prompt_multi += "IMPORTANTE: Prohibido marcar 'es_ambiguo' como true. DEBES elegir la categoría que te parezca más adecuada para cada transacción y forzar es_ambiguo a false."
+    
+    try:
+        chat = client.chats.create(
+            model='gemini-flash-lite-latest',
+            config=types.GenerateContentConfig(
+                system_instruction=prompt_multi,
+                response_mime_type="application/json",
+                response_schema=MultiTransactionExtraction,
+                temperature=0.01
+            )
+        )
+        
+        response = chat.send_message(f"Extrae los datos de estas transacciones: '{text}'")
+        
+        try:
+            extracted_data = json.loads(response.text)
+        except json.JSONDecodeError:
+            raise ValueError("La Inteligencia Artificial se confundió al procesar múltiples registros. Intenta enviarlos más separados.")
+            
+        lista_tx_dicts = extracted_data.get("transacciones", [])
+        if not lista_tx_dicts:
+            raise ValueError("No pude encontrar ninguna transacción clara en tu mensaje múltiple.")
+            
+        transacciones_finales = []
+        
+        for i, tx_data in enumerate(lista_tx_dicts):
+            # Limpieza básica
+            _ = tx_data.pop("es_transaccion", True) # Ignoramos validaciones individuales
+            _ = tx_data.pop("es_ambiguo", False)
+            _ = tx_data.pop("opciones_categoria", [])
+            
+            fecha_str = tx_data.pop("fecha", None)
+            fecha_tx = get_hoy_santiago()
+            if fecha_str:
+                if isinstance(fecha_str, str):
+                    try:
+                        fecha_tx = date.fromisoformat(fecha_str)
+                    except ValueError:
+                        pass
+                else:
+                    fecha_tx = fecha_str
+            
+            tx = Transaction(
+                id_transaccion=f"{base_message_id}-{i+1}",
+                fecha=fecha_tx,
+                **tx_data
+            )
+            transacciones_finales.append(tx)
+            
+        return transacciones_finales
+        
+    except ValueError as ve:
+        raise ve
+    except Exception as e:
+        logger.error(f"Error procesando mensaje múltiple con Gemini: {e}")
+        raise ValueError("Hubo un error interno o de formato procesando las múltiples transacciones.")
