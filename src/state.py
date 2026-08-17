@@ -5,6 +5,7 @@ from src.models import Transaction
 class UserState(str, Enum):
     IDLE = "IDLE"
     AWAITING_CONFIRMATION = "AWAITING_CONFIRMATION"
+    AWAITING_EDIT = "AWAITING_EDIT"
 
 class ConversationState:
     """Almacena el estado conversacional de un usuario específico."""
@@ -12,6 +13,7 @@ class ConversationState:
         self.state: UserState = UserState.IDLE
         self.pending_transaction: Transaction | None = None
         self.options: list[str] = []
+        self.edit_transaction_id: str | None = None
 
 # Diccionario global en memoria para guardar el estado por chat_id
 # En un bot de producción masivo, esto iría a Redis o PostgreSQL.

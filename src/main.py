@@ -27,7 +27,7 @@ except Exception as e:
     logger.error(f"No se pudo inicializar GoogleSheetsClient: {e}")
     sheets_client = None
 
-async def enviar_mensaje_telegram(chat_id: str, texto: str):
+async def enviar_mensaje_telegram(chat_id: str, texto: str, reply_markup: dict = None):
     """Función auxiliar para responderle al usuario vía Telegram"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
@@ -35,11 +35,39 @@ async def enviar_mensaje_telegram(chat_id: str, texto: str):
         "text": texto,
         "parse_mode": "Markdown"
     }
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+        
     async with httpx.AsyncClient() as client:
         try:
             await client.post(url, json=payload)
         except Exception as e:
             logger.error(f"Error enviando mensaje a Telegram: {e}")
+
+async def process_telegram_callback(chat_id: str, callback_data: str):
+    """Maneja los clics en los botones Inline de Telegram"""
+    session = get_user_session(int(chat_id))
+    
+    if callback_data.startswith("delete:"):
+        tx_id = callback_data.split(":")[1]
+        success = sheets_client.delete_transaction(tx_id)
+        if success:
+            await enviar_mensaje_telegram(chat_id, "🗑️ ✅ Transacción eliminada de Google Sheets exitosamente.")
+        else:
+            await enviar_mensaje_telegram(chat_id, "❌ Error al intentar eliminar la transacción. Puede que ya no exista.")
+            
+    elif callback_data.startswith("edit:"):
+        tx_id = callback_data.split(":")[1]
+        session.state = UserState.AWAITING_EDIT
+        session.edit_transaction_id = tx_id
+        
+        instrucciones = (
+            "✏️ *Modo Edición Activado*\n\n"
+            "Escribe la corrección como si fuera un gasto nuevo.\n"
+            "Ejemplo: si te equivocaste en el monto, escribe _'fueron 12000 en uber en verdad'_.\n\n"
+            "Yo actualizaré el registro original."
+        )
+        await enviar_mensaje_telegram(chat_id, instrucciones)
 
 async def process_telegram_update(chat_id: str, text: str, message_id: str):
     """
@@ -47,16 +75,14 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
     """
     session = get_user_session(int(chat_id))
 
-    # --- FLUJO 1: ESPERANDO CONFIRMACIÓN ---
+    # --- FLUJO 1: ESPERANDO CONFIRMACIÓN DE CATEGORÍA ---
     if session.state == UserState.AWAITING_CONFIRMATION:
         categoria_elegida = None
-        # Buscar si el texto del usuario coincide con alguna opción
         for op in session.options:
             if op.lower() in text.lower():
                 categoria_elegida = op
                 break
         
-        # Fallback si respondió "1" o "2"
         if not categoria_elegida:
             if text.strip() == "1" and len(session.options) >= 1:
                 categoria_elegida = session.options[0]
@@ -64,26 +90,97 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
                 categoria_elegida = session.options[1]
 
         if categoria_elegida:
-            # Completar la transacción y guardar
             session.pending_transaction.categoria = categoria_elegida
-            success = sheets_client.append_transaction(session.pending_transaction)
+            
+            # Verificar si esto era parte de una edición
+            if session.edit_transaction_id:
+                session.pending_transaction.id_transaccion = session.edit_transaction_id
+                success = sheets_client.update_transaction(session.pending_transaction)
+                msg_exito = f"✅ Edición guardada exitosamente en la categoría *{categoria_elegida}*."
+            else:
+                success = sheets_client.append_transaction(session.pending_transaction)
+                msg_exito = f"✅ Registrado exitosamente en la categoría *{categoria_elegida}*."
+                
             if success:
-                await enviar_mensaje_telegram(chat_id, f"✅ Registrado exitosamente en la categoría *{categoria_elegida}*.")
+                reply_markup = {
+                    "inline_keyboard": [
+                        [
+                            {"text": "✏️ Editar", "callback_data": f"edit:{session.pending_transaction.id_transaccion}"},
+                            {"text": "🗑️ Deshacer", "callback_data": f"delete:{session.pending_transaction.id_transaccion}"}
+                        ]
+                    ]
+                }
+                await enviar_mensaje_telegram(chat_id, msg_exito, reply_markup=reply_markup)
             else:
                 await enviar_mensaje_telegram(chat_id, "❌ Error guardando en Google Sheets.")
             
-            # Limpiar el estado de la conversación
+            # Limpiar estado
             session.state = UserState.IDLE
             session.pending_transaction = None
             session.options = []
+            session.edit_transaction_id = None
         else:
             opciones_str = " o ".join([f"*{op}*" for op in session.options])
             await enviar_mensaje_telegram(chat_id, f"⚠️ No entendí tu respuesta. Por favor responde {opciones_str}.")
         
         return
 
-    # --- FLUJO 2: MENSAJE NUEVO ---
-    # Interceptar saludos básicos y comandos de inicio sin llamar a la IA
+    # --- FLUJO 2: EDITANDO UNA TRANSACCIÓN (TEXTO LIBRE) ---
+    if session.state == UserState.AWAITING_EDIT:
+        try:
+            # Parseamos usando el ID antiguo para sobrescribir
+            parse_result = parse_transaction_message(text, message_id=session.edit_transaction_id)
+            
+            if parse_result.es_ambiguo and parse_result.opciones_categoria:
+                session.state = UserState.AWAITING_CONFIRMATION
+                session.pending_transaction = parse_result.transaction
+                session.options = parse_result.opciones_categoria
+                
+                opciones_list = "\n".join([f"{i+1}. {op}" for i, op in enumerate(session.options)])
+                pregunta = (
+                    f"🤔 Parece que la corrección es por ${parse_result.transaction.monto:,.0f} en '{parse_result.transaction.concepto}'.\n"
+                    f"No estoy seguro de la categoría. ¿Cuál es?\n"
+                    f"{opciones_list}\n"
+                    f"_(Responde con el número o el nombre de la categoría)_"
+                )
+                await enviar_mensaje_telegram(chat_id, pregunta)
+                return
+            
+            success = sheets_client.update_transaction(parse_result.transaction)
+            if success:
+                respuesta = (
+                    f"✅ *Registro Actualizado Exitosamente:*\n"
+                    f"- *Monto:* ${parse_result.transaction.monto:,.0f}\n"
+                    f"- *Categoría:* {parse_result.transaction.categoria}\n"
+                    f"- *Tipo:* {parse_result.transaction.tipo.value}\n"
+                    f"- *Fecha:* {parse_result.transaction.fecha}\n"
+                    f"- *Metodo:* {parse_result.transaction.metodo.value}\n"
+                    f"- *Concepto:* {parse_result.transaction.concepto}"
+                )
+                reply_markup = {
+                    "inline_keyboard": [
+                        [
+                            {"text": "✏️ Volver a Editar", "callback_data": f"edit:{parse_result.transaction.id_transaccion}"},
+                            {"text": "🗑️ Borrar Definitivamente", "callback_data": f"delete:{parse_result.transaction.id_transaccion}"}
+                        ]
+                    ]
+                }
+                await enviar_mensaje_telegram(chat_id, respuesta, reply_markup=reply_markup)
+            else:
+                await enviar_mensaje_telegram(chat_id, "❌ Error actualizando en Google Sheets.")
+                
+            # Limpiar estado
+            session.state = UserState.IDLE
+            session.edit_transaction_id = None
+            
+        except ValueError as ve:
+            await enviar_mensaje_telegram(chat_id, f"⚠️ No pude entender la corrección:\n_{ve}_")
+        except Exception as e:
+            logger.error(f"Error en edición: {e}")
+            await enviar_mensaje_telegram(chat_id, "❌ Error interno procesando tu edición.")
+        return
+
+    # --- FLUJO 3: MENSAJE NUEVO ---
     texto_limpio = text.strip().lower()
     saludos = ["hola", "buenas", "buenos dias", "buenos días", "buenas tardes", "buenas noches", "/start", "start", "hello"]
     if texto_limpio in saludos:
@@ -102,13 +199,11 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         parse_result = parse_transaction_message(text, message_id=message_id)
         
         if parse_result.es_ambiguo and parse_result.opciones_categoria:
-            # Iniciar flujo de confirmación
             session.state = UserState.AWAITING_CONFIRMATION
             session.pending_transaction = parse_result.transaction
             session.options = parse_result.opciones_categoria
             
             opciones_list = "\n".join([f"{i+1}. {op}" for i, op in enumerate(session.options)])
-            
             pregunta = (
                 f"🤔 Parece que gastaste ${parse_result.transaction.monto:,.0f} en '{parse_result.transaction.concepto}'.\n"
                 f"No estoy seguro de la categoría. ¿Cuál es?\n"
@@ -121,11 +216,26 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             # Procesamiento directo
             success = sheets_client.append_transaction(parse_result.transaction)
             if success:
-                respuesta = f"✅ Registrado exitosamente:\n- *Monto:* ${parse_result.transaction.monto:,.0f}\n- *Categoría:* {parse_result.transaction.categoria}\n- *Tipo:* {parse_result.transaction.tipo.value}\
-                    \n- *Fecha:* {parse_result.transaction.fecha}\
-                    \n- *Metodo:* {parse_result.transaction.metodo}\
-                    \n- *Concepto:* {parse_result.transaction.concepto}"
-                await enviar_mensaje_telegram(chat_id, respuesta)
+                respuesta = (
+                    f"✅ Registrado exitosamente:\n"
+                    f"- *Monto:* ${parse_result.transaction.monto:,.0f}\n"
+                    f"- *Categoría:* {parse_result.transaction.categoria}\n"
+                    f"- *Tipo:* {parse_result.transaction.tipo.value}\n"
+                    f"- *Fecha:* {parse_result.transaction.fecha}\n"
+                    f"- *Metodo:* {parse_result.transaction.metodo.value}\n"
+                    f"- *Concepto:* {parse_result.transaction.concepto}"
+                )
+                
+                # Adjuntamos botones para editar o deshacer
+                reply_markup = {
+                    "inline_keyboard": [
+                        [
+                            {"text": "✏️ Editar", "callback_data": f"edit:{parse_result.transaction.id_transaccion}"},
+                            {"text": "🗑️ Deshacer", "callback_data": f"delete:{parse_result.transaction.id_transaccion}"}
+                        ]
+                    ]
+                }
+                await enviar_mensaje_telegram(chat_id, respuesta, reply_markup=reply_markup)
             else:
                 await enviar_mensaje_telegram(chat_id, "❌ Error guardando en Google Sheets.")
                 
@@ -136,35 +246,49 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         logger.error(f"Error inesperado: {e}")
         await enviar_mensaje_telegram(chat_id, "❌ Error interno del servidor procesando tu mensaje.")
 
+
 @app.post(f"/webhook/{TELEGRAM_TOKEN}")
 async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
-    """
-    Endpoint para recibir actualizaciones de Telegram. (Devuelve HTTP 200 Inmediatamente).
-    """
+    """Endpoint para recibir actualizaciones de Telegram."""
     if not sheets_client:
         raise HTTPException(status_code=500, detail="El cliente de Google Sheets no está configurado.")
 
     update = await request.json()
-    message = update.get("message")
     
+    # Manejo de Callback Query (Botones)
+    callback_query = update.get("callback_query")
+    if callback_query:
+        callback_data = callback_query.get("data", "")
+        message = callback_query.get("message", {})
+        chat_id = str(message.get("chat", {}).get("id"))
+        
+        if chat_id != ALLOWED_USER_ID:
+            return {"status": "forbidden"}
+            
+        background_tasks.add_task(process_telegram_callback, chat_id, callback_data)
+        
+        # Debemos responder al webhook de telegram
+        callback_id = callback_query.get("id")
+        async with httpx.AsyncClient() as client:
+            await client.get(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/answerCallbackQuery?callback_query_id={callback_id}")
+            
+        return {"status": "ok"}
+    
+    # Manejo de Texto
+    message = update.get("message")
     if not message:
-        return {"status": "ignored", "reason": "Not a message update"}
+        return {"status": "ignored", "reason": "Not a message or callback update"}
         
     chat_id = str(message.get("chat", {}).get("id"))
     text = message.get("text", "")
     message_id = str(message.get("message_id"))
 
-    # Validación Estricta de Seguridad
     if chat_id != ALLOWED_USER_ID:
-        logger.warning(f"Acceso denegado. Intento desde chat_id: {chat_id}")
         return {"status": "forbidden"}
 
     if not text:
         return {"status": "ignored", "reason": "Empty text"}
 
-    logger.info(f"Recibido webhook de Telegram: '{text}' (ID: {message_id}). Procesando en Background...")
-    
-    # Enviar a BackgroundTasks para no bloquear el Webhook
     background_tasks.add_task(process_telegram_update, chat_id, text, message_id)
     
     return {"status": "ok"}

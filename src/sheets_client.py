@@ -58,6 +58,35 @@ class GoogleSheetsClient:
             logger.error(f"Error al leer IDs existentes: {e}")
             return set()
 
+    def _find_row_index(self, id_transaccion: str, sheet_name: str = "Gastos") -> int:
+        """Encuentra el índice de la fila (1-indexed) de una transacción."""
+        range_name = f"{sheet_name}!A:A"
+        try:
+            result = self.sheet.values().get(
+                spreadsheetId=self.spreadsheet_id,
+                range=range_name
+            ).execute()
+            values = result.get('values', [])
+            for i, row in enumerate(values):
+                if row and row[0] == id_transaccion:
+                    return i + 1 # 1-indexed
+            return -1
+        except Exception as e:
+            logger.error(f"Error al buscar ID {id_transaccion}: {e}")
+            return -1
+
+    def _get_sheet_id(self, sheet_name: str) -> int:
+        """Obtiene el ID interno numérico de una pestaña por su nombre."""
+        try:
+            spreadsheet = self.service.spreadsheets().get(spreadsheetId=self.spreadsheet_id).execute()
+            for sheet in spreadsheet.get('sheets', []):
+                if sheet.get('properties', {}).get('title') == sheet_name:
+                    return sheet.get('properties', {}).get('sheetId')
+            return 0
+        except Exception as e:
+            logger.error(f"Error obteniendo sheetId para {sheet_name}: {e}")
+            return 0
+
     def append_transaction(self, transaction: Transaction, sheet_name: str = "Gastos") -> bool:
         """
         Inserta una transacción en Google Sheets si su ID no existe previamente.
@@ -89,4 +118,60 @@ class GoogleSheetsClient:
             return True
         except Exception as e:
             logger.error(f"Error al insertar en Google Sheets: {e}")
+            return False
+
+    def update_transaction(self, transaction: Transaction, sheet_name: str = "Gastos") -> bool:
+        """Sobrescribe una transacción existente."""
+        row_index = self._find_row_index(transaction.id_transaccion, sheet_name)
+        if row_index == -1:
+            logger.error(f"No se encontró la transacción {transaction.id_transaccion} para actualizar.")
+            return False
+            
+        try:
+            body = {'values': [transaction.to_row()]}
+            range_name = f"{sheet_name}!A{row_index}:H{row_index}"
+            self.sheet.values().update(
+                spreadsheetId=self.spreadsheet_id,
+                range=range_name,
+                valueInputOption='USER_ENTERED',
+                body=body
+            ).execute()
+            logger.info(f"Transacción {transaction.id_transaccion} actualizada correctamente en fila {row_index}.")
+            return True
+        except Exception as e:
+            logger.error(f"Error al actualizar la fila {row_index}: {e}")
+            return False
+
+    def delete_transaction(self, id_transaccion: str, sheet_name: str = "Gastos") -> bool:
+        """Borra la fila de una transacción de forma definitiva."""
+        row_index = self._find_row_index(id_transaccion, sheet_name)
+        if row_index == -1:
+            logger.error(f"No se encontró la transacción {id_transaccion} para borrar.")
+            return False
+            
+        sheet_id = self._get_sheet_id(sheet_name)
+        
+        request = {
+            "requests": [
+                {
+                    "deleteDimension": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "dimension": "ROWS",
+                            "startIndex": row_index - 1, # 0-indexed y exclusivo final
+                            "endIndex": row_index
+                        }
+                    }
+                }
+            ]
+        }
+        try:
+            self.service.spreadsheets().batchUpdate(
+                spreadsheetId=self.spreadsheet_id,
+                body=request
+            ).execute()
+            logger.info(f"Transacción {id_transaccion} borrada (fila {row_index}).")
+            return True
+        except Exception as e:
+            logger.error(f"Error borrando fila {row_index}: {e}")
             return False

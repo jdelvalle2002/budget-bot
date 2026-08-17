@@ -64,7 +64,7 @@ HOY ES: {hoy}. Usa esta fecha de referencia estricta para cálculos de tiempo co
 
 Reglas de negocio:
 1. 'es_transaccion': Evalúa si el texto relata un gasto o ingreso REAL Y PROPIO del usuario. Si es una historia sobre otra persona (ej. "mi amigo gastó...", "él me contó..."), una conversación general, o spam, marca esto como false.
-2. 'monto': Debe ser un número entero o decimal positivo. Si el usuario menciona "lucas" o "k" (en Chile), asume miles. Si dice "gambas", son cientos. Si dice "quinas" es quinientos. Si es un reembolso, el monto sigue siendo positivo pero el tipo cambia.
+2. 'monto': Debe ser un número entero o decimal positivo. Si el usuario menciona "lucas" o "k" (en Chile), asume miles. Si dice "gambas", son cientos. Si dice "quinas" está aludiendo a la moneda de quinientos (ej. 3 quinas = 1500). Si es un reembolso, el monto sigue siendo positivo pero el tipo cambia.
 3. 'tipo': Debe ser estrictamente "Ingreso" o "Gasto". (Si fue un Egreso, es gasto. Si dice "me pagaron", "sueldo", "reembolso", "devolución", es Ingreso).
 4. 'concepto': Breve resumen de la transacción en 1 o 2 palabras (ej. "Uber", "Cerveza", "Sueldo", "Deuda Pedro").
 5. 'categoria': DEBE ser EXACTAMENTE una de las siguientes opciones textuales: {CATEGORIAS_DISPONIBLES}.
