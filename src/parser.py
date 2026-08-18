@@ -185,44 +185,147 @@ def parse_transaction_message(text: str, message_id: str, categorias_disponibles
         logger.error(f"Error procesando mensaje con Gemini: {e}")
         raise ValueError("Fallo en la IA al intentar procesar el mensaje. Inténtalo de nuevo.")
 
-def responder_consulta_natural(pregunta: str, datos_json: str) -> str:
+class FiltroTiempo(str, Enum):
+    ESTE_MES = "este_mes"
+    MES_PASADO = "mes_pasado"
+    ESTE_AÑO = "este_año"
+    SIEMPRE = "siempre"
+
+class IntentType(str, Enum):
+    GASTO_TOTAL = "gasto_total"
+    DESGLOSE_CATEGORIA = "desglose_categoria"
+    DESGLOSE_METODO = "desglose_metodo"
+    BUSQUEDA_ESPECIFICA = "busqueda_especifica"
+
+class AnalisisQuery(BaseModel):
+    intent: IntentType
+    filtro_tiempo: FiltroTiempo
+    categoria_objetivo: str | None = None
+    concepto_objetivo: str | None = None
+
+def filtrar_transacciones(transacciones: list[dict], filtro_tiempo: FiltroTiempo) -> list[dict]:
+    hoy = get_hoy_santiago()
+    filtradas = []
+    
+    for tx in transacciones:
+        # Extraer fecha
+        fecha_str = tx.get('Fecha', '')
+        if not fecha_str:
+            continue
+            
+        try:
+            # Soportar formato iso o dia/mes/año según como esté en sheets
+            # Asumiremos ISO YYYY-MM-DD por defecto de nuestro propio parser
+            if "T" in fecha_str:
+                fecha_tx = date.fromisoformat(fecha_str.split("T")[0])
+            else:
+                fecha_tx = date.fromisoformat(fecha_str)
+        except ValueError:
+            continue
+            
+        if filtro_tiempo == FiltroTiempo.ESTE_MES:
+            if fecha_tx.year == hoy.year and fecha_tx.month == hoy.month:
+                filtradas.append(tx)
+        elif filtro_tiempo == FiltroTiempo.MES_PASADO:
+            mes_pasado = hoy.month - 1 if hoy.month > 1 else 12
+            año_pasado = hoy.year if hoy.month > 1 else hoy.year - 1
+            if fecha_tx.year == año_pasado and fecha_tx.month == mes_pasado:
+                filtradas.append(tx)
+        elif filtro_tiempo == FiltroTiempo.ESTE_AÑO:
+            if fecha_tx.year == hoy.year:
+                filtradas.append(tx)
+        else:
+            filtradas.append(tx)
+            
+    return filtradas
+
+def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
     """
-    Toma una pregunta financiera y un historial de transacciones en JSON,
-    y utiliza Gemini para generar una respuesta analítica.
+    Motor analítico determinista. Usa Gemini para clasificar la intención,
+    y Python para calcular el resultado riguroso matemáticamente.
     """
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise ValueError("La variable GEMINI_API_KEY no está configurada.")
         
     client = genai.Client(api_key=api_key)
-    
     hoy = get_hoy_santiago().isoformat()
     
-    prompt_sistema = f"""
-Eres el analista financiero personal del usuario. 
-HOY ES: {hoy}.
-Te daré un JSON con el historial reciente de transacciones de Google Sheets del usuario.
-Tu tarea es responder a la pregunta analítica del usuario de forma amigable, clara, breve y matemáticamente precisa usando los datos proveídos.
-Puedes calcular sumas, identificar promedios, o encontrar gastos específicos.
-Si la información no está en el JSON, díselo de forma honesta. No inventes datos.
-Usa emojis para hacer la respuesta más amigable.
-Responde directamente, sin usar markdown extra de código JSON o saludos muy formales.
-"""
+    prompt_router = f"""
+    Hoy es {hoy}. 
+    Clasifica la intención analítica del usuario sobre sus finanzas.
+    """
+    
     try:
         chat = client.chats.create(
             model='gemini-flash-lite-latest',
             config=types.GenerateContentConfig(
-                system_instruction=prompt_sistema,
-                temperature=0.1
+                system_instruction=prompt_router,
+                response_schema=AnalisisQuery,
+                response_mime_type="application/json",
+                temperature=0.0
             )
         )
+        response = chat.send_message(pregunta)
+        query_data = json.loads(response.text)
+        intent = query_data.get("intent")
+        filtro_tiempo = FiltroTiempo(query_data.get("filtro_tiempo", "este_mes"))
+        categoria_obj = query_data.get("categoria_objetivo")
         
-        contexto = f"DATOS DE TRANSACCIONES (JSON):\n{datos_json}\n\nPREGUNTA DEL USUARIO:\n{pregunta}"
-        response = chat.send_message(contexto)
-        return str(response.text)
+        txs_filtradas = filtrar_transacciones(transacciones, filtro_tiempo)
+        
+        # Filtramos solo gastos por defecto, salvo que sea búsqueda
+        gastos = [tx for tx in txs_filtradas if str(tx.get('Tipo', '')).lower() == 'gasto']
+        
+        respuesta_final = ""
+        
+        if intent == IntentType.GASTO_TOTAL:
+            total = sum(Decimal(str(tx.get('Monto', 0)).replace(',','').replace('$','')) for tx in gastos)
+            respuesta_final = f"📊 Tu gasto total ({filtro_tiempo.value.replace('_', ' ')}) es de **${total:,.0f}**."
+            
+        elif intent == IntentType.DESGLOSE_METODO:
+            desglose = defaultdict(Decimal)
+            for tx in gastos:
+                metodo = tx.get('Metodo', 'Desconocido')
+                desglose[metodo] += Decimal(str(tx.get('Monto', 0)).replace(',','').replace('$',''))
+            
+            respuesta_final = f"💳 **Desglose por Método de Pago ({filtro_tiempo.value.replace('_', ' ')}):**\n"
+            total = Decimal(0)
+            for m, monto in sorted(desglose.items(), key=lambda x: x[1], reverse=True):
+                respuesta_final += f"• {m}: ${monto:,.0f}\n"
+                total += monto
+            respuesta_final += f"\n**Total:** ${total:,.0f}"
+            
+        elif intent == IntentType.DESGLOSE_CATEGORIA:
+            desglose = defaultdict(Decimal)
+            for tx in gastos:
+                cat = tx.get('Categoría', 'Sin Categoría')
+                if categoria_obj and categoria_obj.lower() not in cat.lower():
+                    continue
+                desglose[cat] += Decimal(str(tx.get('Monto', 0)).replace(',','').replace('$',''))
+            
+            respuesta_final = f"📁 **Desglose por Categoría ({filtro_tiempo.value.replace('_', ' ')}):**\n"
+            total = Decimal(0)
+            for c, monto in sorted(desglose.items(), key=lambda x: x[1], reverse=True):
+                respuesta_final += f"• {c}: ${monto:,.0f}\n"
+                total += monto
+            respuesta_final += f"\n**Total analizado:** ${total:,.0f}"
+            
+            # OPINIÓN DE LA IA:
+            if total > 0:
+                prompt_opinion = f"Acabo de calcular este gasto: {respuesta_final}. Dame 1 frase amable, amistosa y súper breve opinando sobre esta distribución de gastos. No des formato markdown."
+                chat_op = client.chats.create(model='gemini-flash-lite-latest')
+                opinion = chat_op.send_message(prompt_opinion)
+                respuesta_final += f"\n\n🤖 _Comentario: {opinion.text.strip()}_"
+                
+        else: # Busqueda Especifica o Fallback
+            respuesta_final = "🔎 Entendí tu consulta, pero por ahora soy mejor haciendo desgloses matemáticos (Categoría, Método o Total). ¡Prueba preguntarme por sumas específicas!"
+
+        return respuesta_final
+        
     except Exception as e:
-        logger.error(f"Error en consulta natural: {e}")
-        raise ValueError("Lo siento, mis circuitos analíticos fallaron al procesar tantos datos. Intenta nuevamente.")
+        logger.error(f"Error en consulta natural determinista: {e}")
+        raise ValueError("Lo siento, mis circuitos analíticos fallaron al clasificar tu intención. Intenta nuevamente.")
 
 def parse_multi_transaction_message(text: str, base_message_id: str, categorias_disponibles: list[str]) -> list[Transaction]:
     """

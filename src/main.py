@@ -337,12 +337,9 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         await enviar_mensaje_telegram(chat_id, "⏳ Analizando tu historial (esto tomará unos segundos)...")
         ultimas_transacciones = sheets_client.get_last_transactions(limit=1000)
         
-        import json
-        datos_json = json.dumps(ultimas_transacciones, ensure_ascii=False)
-        
         try:
             from src.parser import responder_consulta_natural
-            respuesta_ai = responder_consulta_natural(pregunta, datos_json)
+            respuesta_ai = responder_consulta_natural(pregunta, ultimas_transacciones)
             await enviar_mensaje_telegram(chat_id, f"💡 *Analista Financiero:*\n\n{respuesta_ai}")
         except Exception as e:
             await enviar_mensaje_telegram(chat_id, f"❌ Hubo un error procesando tu consulta: {e}")
