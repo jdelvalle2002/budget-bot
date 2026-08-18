@@ -212,31 +212,48 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         await enviar_mensaje_telegram(chat_id, msg)
         return
 
-    if texto_limpio in ["/resumen", "resumen"]:
+    if texto_limpio.startswith("/resumen") or texto_limpio.startswith("resumen"):
+        # Detectar si quiere el mes anterior
+        month_offset = 0
+        if "anterior" in texto_limpio or "pasado" in texto_limpio:
+            month_offset = -1
+            
         await enviar_mensaje_telegram(chat_id, "⏳ Consultando tu planilla...")
-        resumen = sheets_client.get_current_month_summary()
+        resumen, t_month, t_year = sheets_client.get_month_summary(month_offset=month_offset)
+        
         if not resumen:
-            await enviar_mensaje_telegram(chat_id, "ℹ️ No hay gastos registrados este mes o hubo un error al leer la planilla.")
+            await enviar_mensaje_telegram(chat_id, f"ℹ️ No hay gastos registrados para {t_month:02d}/{t_year} o hubo un error.")
             return
             
-        from src.models import get_hoy_santiago
         import io
         import matplotlib
         matplotlib.use('Agg')
         import matplotlib.pyplot as plt
         
-        hoy = get_hoy_santiago()
-        msg_lineas = [f"📊 *Resumen de Gastos - Mes {hoy.month:02d}/{hoy.year}*\n"]
+        msg_lineas = [f"📊 *Resumen de Gastos - {t_month:02d}/{t_year}*\n"]
         total = 0
         
         categorias = []
         montos = []
         
-        for cat, monto in sorted(resumen.items(), key=lambda x: x[1], reverse=True):
-            msg_lineas.append(f"- *{cat}:* ${monto:,.0f}")
-            total += monto
+        # Diccionario de colores fijos para mantener consistencia visual
+        CATEGORY_COLORS = {
+            "Alimentación": "#ff9999", "Deportes": "#66b3ff", "Hogar": "#99ff99", 
+            "Inversiones": "#ffcc99", "Mesada": "#c2c2f0", "Salidas": "#ffb3e6", 
+            "Salud": "#c4e17f", "Telefonía": "#76D7C4", "Transporte": "#F7DC6F", 
+            "Remuneraciones": "#82E0AA", "Otros Gastos": "#BFC9CA", "Otros Ingresos": "#F8C471"
+        }
+        default_colors = plt.cm.tab20.colors
+        colores_usados = []
+        
+        for cat, datos in sorted(resumen.items(), key=lambda x: x[1]["total"], reverse=True):
+            msg_lineas.append(f"- *{cat}:* ${datos['total']:,.0f} ({datos['count']} txs)")
+            total += datos['total']
             categorias.append(cat)
-            montos.append(monto)
+            montos.append(datos['total'])
+            # Asignar color fijo o fallback
+            color = CATEGORY_COLORS.get(cat, default_colors[len(colores_usados) % len(default_colors)])
+            colores_usados.append(color)
             
         msg_lineas.append(f"\n💰 *Total Gastado:* ${total:,.0f}")
         
@@ -246,11 +263,11 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             
             wedges, texts, autotexts = ax.pie(
                 montos, autopct='%1.1f%%', textprops=dict(color="w", weight="bold"), 
-                colors=plt.cm.Paired.colors, startangle=140
+                colors=colores_usados, startangle=140
             )
             
             ax.legend(wedges, categorias, title="Categorías", loc="center left", bbox_to_anchor=(1, 0, 0.5, 1))
-            ax.set_title(f"Gastos - Mes {hoy.month:02d}/{hoy.year}")
+            ax.set_title(f"Gastos - Mes {t_month:02d}/{t_year}", pad=20, fontsize=14, fontweight="bold")
             
             buf = io.BytesIO()
             plt.savefig(buf, format='png', bbox_inches="tight")

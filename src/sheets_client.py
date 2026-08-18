@@ -207,11 +207,23 @@ class GoogleSheetsClient:
             logger.error(f"Error obteniendo últimas transacciones: {e}")
             return []
 
-    def get_current_month_summary(self, sheet_name: str = "Gastos") -> dict:
-        """Agrupa los gastos del mes en curso por categoría."""
+    def get_month_summary(self, month_offset: int = 0, sheet_name: str = "Gastos") -> tuple[dict, int, int]:
+        """Agrupa los gastos del mes indicado por categoría, retornando total y conteo."""
         from src.models import get_hoy_santiago
         hoy = get_hoy_santiago()
-        mes_actual = f"{hoy.year}-{hoy.month:02d}" # Ej: "2026-08"
+        
+        target_month = hoy.month + month_offset
+        target_year = hoy.year
+        
+        while target_month <= 0:
+            target_month += 12
+            target_year -= 1
+            
+        while target_month > 12:
+            target_month -= 12
+            target_year += 1
+            
+        mes_objetivo = f"{target_year}-{target_month:02d}"
         
         range_name = f"{sheet_name}!A:H"
         try:
@@ -229,16 +241,19 @@ class GoogleSheetsClient:
                     monto_str = str(row[3]).replace(',', '')
                     categoria = row[5]
                     
-                    if fecha_str.startswith(mes_actual) and tipo.lower() == "gasto":
+                    if fecha_str.startswith(mes_objetivo) and tipo.lower() == "gasto":
                         try:
                             monto = float(monto_str)
-                            resumen[categoria] = resumen.get(categoria, 0) + monto
+                            if categoria not in resumen:
+                                resumen[categoria] = {"total": 0, "count": 0}
+                            resumen[categoria]["total"] += monto
+                            resumen[categoria]["count"] += 1
                         except ValueError:
                             continue
-            return resumen
+            return resumen, target_month, target_year
         except Exception as e:
             logger.error(f"Error generando resumen: {e}")
-            return {}
+            return {}, target_month, target_year
     def delete_transaction(self, id_transaccion: str, sheet_name: str = "Gastos") -> bool:
         """Borra la fila de una transacción de forma definitiva."""
         row_index = self._find_row_index(id_transaccion, sheet_name)
