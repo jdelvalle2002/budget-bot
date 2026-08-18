@@ -44,6 +44,23 @@ async def enviar_mensaje_telegram(chat_id: str, texto: str, reply_markup: dict =
         except Exception as e:
             logger.error(f"Error enviando mensaje a Telegram: {e}")
 
+async def enviar_foto_telegram(chat_id: str, photo_bytes: bytes, caption: str = ""):
+    """Función auxiliar para enviar imágenes a Telegram"""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
+    data = {
+        "chat_id": chat_id,
+        "caption": caption,
+        "parse_mode": "Markdown"
+    }
+    files = {
+        "photo": ("resumen.png", photo_bytes, "image/png")
+    }
+    async with httpx.AsyncClient() as client:
+        try:
+            await client.post(url, data=data, files=files)
+        except Exception as e:
+            logger.error(f"Error enviando foto a Telegram: {e}")
+
 async def process_telegram_callback(chat_id: str, callback_data: str):
     """Maneja los clics en los botones Inline de Telegram"""
     session = get_user_session(int(chat_id))
@@ -203,15 +220,49 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             return
             
         from src.models import get_hoy_santiago
+        import io
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        
         hoy = get_hoy_santiago()
         msg_lineas = [f"📊 *Resumen de Gastos - Mes {hoy.month:02d}/{hoy.year}*\n"]
         total = 0
+        
+        categorias = []
+        montos = []
+        
         for cat, monto in sorted(resumen.items(), key=lambda x: x[1], reverse=True):
             msg_lineas.append(f"- *{cat}:* ${monto:,.0f}")
             total += monto
+            categorias.append(cat)
+            montos.append(monto)
             
         msg_lineas.append(f"\n💰 *Total Gastado:* ${total:,.0f}")
-        await enviar_mensaje_telegram(chat_id, "\n".join(msg_lineas))
+        
+        # Generar gráfico
+        try:
+            fig, ax = plt.subplots(figsize=(8, 6), subplot_kw=dict(aspect="equal"))
+            
+            wedges, texts, autotexts = ax.pie(
+                montos, autopct='%1.1f%%', textprops=dict(color="w", weight="bold"), 
+                colors=plt.cm.Paired.colors, startangle=140
+            )
+            
+            ax.legend(wedges, categorias, title="Categorías", loc="center left", bbox_to_anchor=(1, 0, 0.5, 1))
+            ax.set_title(f"Gastos - Mes {hoy.month:02d}/{hoy.year}")
+            
+            buf = io.BytesIO()
+            plt.savefig(buf, format='png', bbox_inches="tight")
+            buf.seek(0)
+            plt.close(fig)
+            
+            await enviar_foto_telegram(chat_id, buf.getvalue(), caption="\n".join(msg_lineas))
+        except Exception as e:
+            logger.error(f"Error generando gráfico: {e}")
+            # Fallback a texto
+            await enviar_mensaje_telegram(chat_id, "\n".join(msg_lineas))
+            
         return
 
     if texto_limpio in ["/ultimas", "últimas", "ultimas"]:

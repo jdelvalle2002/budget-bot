@@ -27,3 +27,6 @@ flake8>=6.0.0
 
 # Inteligencia Artificial
 google-genai>=0.2.0
+
+# Gráficos
+matplotlib>=3.7.0
