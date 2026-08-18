@@ -177,8 +177,9 @@ def setup_sheet(sheet_id: str):
     logger.info("1. Abre tu planilla en el navegador.")
     logger.info("2. Ve a 'Extensiones' > 'Apps Script'.")
     logger.info("3. Pega este código:")
-    logger.info(\"\"\"
+    logger.info(r"""
 function onEdit(e) {
+  if (!e) return; // Previene error si se ejecuta manualmente desde el editor
   var sheet = e.source.getActiveSheet();
   // Ignorar si no estamos en una hoja que parezca un año (ej. 2026)
   if (!sheet.getName().match(/^20\d{2}$/)) return;
@@ -189,8 +190,9 @@ function onEdit(e) {
     sheet.getRange(range.getRow(), 1).setValue("MANUAL-" + new Date().getTime());
   }
 }
-    \"\"\")
-    logger.info("4. Guarda y cierra Apps Script.")
+    """)
+    logger.info("4. Guarda y cierra Apps Script (NO le des al botón Ejecutar/Play).")
+    logger.info("   -> La función corre sola cuando editas la planilla directamente.")
     logger.info("--------------------------------------------------")
 
 
