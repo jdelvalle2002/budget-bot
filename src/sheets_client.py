@@ -87,12 +87,16 @@ class GoogleSheetsClient:
             logger.error(f"Error obteniendo sheetId para {sheet_name}: {e}")
             return 0
 
-    def append_transaction(self, transaction: Transaction, sheet_name: str = "Gastos") -> bool:
+    def append_transaction(self, transaction: Transaction, sheet_name: str = None) -> bool:
         """
         Inserta una transacción en Google Sheets si su ID no existe previamente.
         Retorna True si la inserción fue exitosa o si ya existía (idempotencia cumplida),
         False si hubo un error.
         """
+        if not sheet_name:
+            from src.models import get_hoy_santiago
+            sheet_name = str(get_hoy_santiago().year)
+            
         # Chequear Idempotencia
         range_name_ids = f"{sheet_name}!A:A"
         existing_ids = self._get_existing_transaction_ids(range_name_ids)
@@ -120,8 +124,12 @@ class GoogleSheetsClient:
             logger.error(f"Error al insertar en Google Sheets: {e}")
             return False
 
-    def update_transaction(self, transaction: Transaction, sheet_name: str = "Gastos") -> bool:
+    def update_transaction(self, transaction: Transaction, sheet_name: str = None) -> bool:
         """Sobrescribe una transacción existente."""
+        if not sheet_name:
+            from src.models import get_hoy_santiago
+            sheet_name = str(get_hoy_santiago().year)
+            
         row_index = self._find_row_index(transaction.id_transaccion, sheet_name)
         if row_index == -1:
             logger.error(f"No se encontró la transacción {transaction.id_transaccion} para actualizar.")
@@ -142,8 +150,12 @@ class GoogleSheetsClient:
             logger.error(f"Error al actualizar la fila {row_index}: {e}")
             return False
 
-    def append_multiple_transactions(self, transactions: list, sheet_name: str = "Gastos") -> bool:
+    def append_multiple_transactions(self, transactions: list, sheet_name: str = None) -> bool:
         """Añade múltiples transacciones de una sola vez."""
+        if not sheet_name:
+            from src.models import get_hoy_santiago
+            sheet_name = str(get_hoy_santiago().year)
+            
         if not transactions:
             return True
         range_name = f"{sheet_name}!A:H"
@@ -162,8 +174,12 @@ class GoogleSheetsClient:
         except Exception as e:
             logger.error(f"Error al añadir múltiples transacciones: {e}")
             return False
-    def get_last_transactions(self, limit: int = 5, sheet_name: str = "Gastos") -> list[dict]:
+    def get_last_transactions(self, limit: int = 5, sheet_name: str = None) -> list[dict]:
         """Devuelve las últimas N transacciones registradas (útil para el bot de Telegram)."""
+        if not sheet_name:
+            from src.models import get_hoy_santiago
+            sheet_name = str(get_hoy_santiago().year)
+            
         range_name = f"{sheet_name}!A:H"
         try:
             result = self.sheet.values().get(
@@ -207,10 +223,13 @@ class GoogleSheetsClient:
             logger.error(f"Error obteniendo últimas transacciones: {e}")
             return []
 
-    def get_month_summary(self, month_offset: int = 0, sheet_name: str = "Gastos") -> tuple[dict, int, int]:
+    def get_month_summary(self, month_offset: int = 0, sheet_name: str = None) -> tuple[dict, int, int]:
         """Agrupa los gastos del mes indicado por categoría, retornando total y conteo."""
         from src.models import get_hoy_santiago
         hoy = get_hoy_santiago()
+        
+        if not sheet_name:
+            sheet_name = str(hoy.year)
         
         target_month = hoy.month + month_offset
         target_year = hoy.year
@@ -254,8 +273,12 @@ class GoogleSheetsClient:
         except Exception as e:
             logger.error(f"Error generando resumen: {e}")
             return {}, target_month, target_year
-    def delete_transaction(self, id_transaccion: str, sheet_name: str = "Gastos") -> bool:
+    def delete_transaction(self, id_transaccion: str, sheet_name: str = None) -> bool:
         """Borra la fila de una transacción de forma definitiva."""
+        if not sheet_name:
+            from src.models import get_hoy_santiago
+            sheet_name = str(get_hoy_santiago().year)
+            
         row_index = self._find_row_index(id_transaccion, sheet_name)
         if row_index == -1:
             logger.error(f"No se encontró la transacción {id_transaccion} para borrar.")
@@ -287,3 +310,37 @@ class GoogleSheetsClient:
         except Exception as e:
             logger.error(f"Error borrando fila {row_index}: {e}")
             return False
+
+    def load_categories_from_config(self, force_refresh: bool = False) -> dict:
+        """
+        Lee la pestaña 'Config' (A:B) para obtener las categorías y sus colores.
+        Retorna un dict: {"Alimentación": "#E74C3C", ...}
+        """
+        if hasattr(self, '_cached_categories') and self._cached_categories and not force_refresh:
+            return self._cached_categories
+            
+        try:
+            result = self.sheet.values().get(
+                spreadsheetId=self.spreadsheet_id,
+                range="Config!A2:B"
+            ).execute()
+            values = result.get('values', [])
+            
+            categorias = {}
+            for row in values:
+                if len(row) > 0 and row[0].strip():
+                    cat_name = row[0].strip()
+                    cat_color = row[1].strip() if len(row) > 1 else None
+                    categorias[cat_name] = cat_color
+                    
+            self._cached_categories = categorias
+            return categorias
+        except Exception as e:
+            logger.error(f"Error leyendo Config: {e}. Asegúrate de haber ejecutado setup_sheet.py")
+            # Fallback hardcodeado si falla la API o la pestaña no existe
+            return {
+                "Alimentación": "#E74C3C", "Deportes": "#3498DB", "Hogar": "#2ECC71", 
+                "Inversiones": "#F39C12", "Mesada": "#9B59B6", "Salidas": "#E84393", 
+                "Salud": "#16A085", "Telefonía": "#1ABC9C", "Transporte": "#F1C40F", 
+                "Remuneraciones": "#27AE60", "Otros Gastos": "#7F8C8D", "Otros Ingresos": "#D35400"
+            }

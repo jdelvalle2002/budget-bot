@@ -145,7 +145,8 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
     if session.state == UserState.AWAITING_EDIT:
         try:
             # Parseamos usando el ID antiguo para sobrescribir
-            parse_result = parse_transaction_message(text, message_id=session.edit_transaction_id)
+            categorias_list = list(sheets_client.load_categories_from_config().keys()) if sheets_client else []
+            parse_result = parse_transaction_message(text, message_id=session.edit_transaction_id, categorias_disponibles=categorias_list)
             
             if parse_result.es_ambiguo and parse_result.opciones_categoria:
                 session.state = UserState.AWAITING_CONFIRMATION
@@ -239,13 +240,8 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         categorias = []
         montos = []
         
-        # Diccionario de colores fijos (Vibrantes)
-        CATEGORY_COLORS = {
-            "Alimentación": "#E74C3C", "Deportes": "#3498DB", "Hogar": "#2ECC71", 
-            "Inversiones": "#F39C12", "Mesada": "#9B59B6", "Salidas": "#E84393", 
-            "Salud": "#16A085", "Telefonía": "#1ABC9C", "Transporte": "#F1C40F", 
-            "Remuneraciones": "#27AE60", "Otros Gastos": "#7F8C8D", "Otros Ingresos": "#D35400"
-        }
+        # Diccionario de colores desde Config de Google Sheets
+        CATEGORY_COLORS = sheets_client.load_categories_from_config() if sheets_client else {}
         default_colors = plt.cm.tab20.colors
         colores_usados = []
         
@@ -362,7 +358,8 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         await enviar_mensaje_telegram(chat_id, "⏳ Procesando múltiples registros...")
         try:
             from src.parser import parse_multi_transaction_message
-            transacciones = parse_multi_transaction_message(texto_multi, base_message_id=f"TG-{message_id}")
+            categorias_list = list(sheets_client.load_categories_from_config().keys()) if sheets_client else []
+            transacciones = parse_multi_transaction_message(texto_multi, base_message_id=f"TG-{message_id}", categorias_disponibles=categorias_list)
             
             if not transacciones:
                 await enviar_mensaje_telegram(chat_id, "❌ No encontré gastos válidos en tu mensaje.")
@@ -384,7 +381,8 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         return
 
     try:
-        parse_result = parse_transaction_message(text, message_id=f"TG-{message_id}")
+        categorias_list = list(sheets_client.load_categories_from_config().keys()) if sheets_client else []
+        parse_result = parse_transaction_message(text, message_id=f"TG-{message_id}", categorias_disponibles=categorias_list)
         
         if parse_result.es_ambiguo and parse_result.opciones_categoria:
             session.state = UserState.AWAITING_CONFIRMATION

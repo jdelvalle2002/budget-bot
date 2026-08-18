@@ -12,16 +12,11 @@ from src.models import Transaction, TipoTransaccion, MetodoPago, get_hoy_santiag
 
 logger = logging.getLogger(__name__)
 
-# Cargar configuración de categorías
-CATEGORY_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config', 'categories.json')
-CATEGORIAS_DISPONIBLES = []
+# Archivo de categorías ahora es dinámico desde Google Sheets
 CATEGORIAS_DICT = {}
-if os.path.exists(CATEGORY_FILE):
-    with open(CATEGORY_FILE, 'r', encoding='utf-8') as f:
+if os.path.exists(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config', 'categories.json')):
+    with open(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config', 'categories.json'), 'r', encoding='utf-8') as f:
         CATEGORIAS_DICT = json.load(f)
-        CATEGORIAS_DISPONIBLES = list(CATEGORIAS_DICT.keys())
-else:
-    CATEGORIAS_DISPONIBLES = ["Alimentación", "Deportes", "Hogar", "Inversiones", "Mesada", "Salidas", "Salud", "Telefonía", "Transporte", "Remuneraciones", "Otros Gastos", "Otros Ingresos"]
 
 class ParseResult(BaseModel):
     transaction: Transaction
@@ -54,7 +49,7 @@ def try_fast_path(text: str, message_id: str) -> ParseResult | None:
                 return ParseResult(transaction=tx, es_ambiguo=False, opciones_categoria=[])
     return None
 
-def get_system_prompt() -> str:
+def get_system_prompt(categorias_disponibles: list[str]) -> str:
     hoy = get_hoy_santiago().isoformat()
     return f"""
 Eres un asistente financiero experto. Tu tarea es extraer información estructurada a partir de mensajes de texto coloquiales.
@@ -67,12 +62,12 @@ Reglas de negocio:
 2. 'monto': Debe ser un número entero o decimal positivo. Si el usuario menciona "lucas" o "k" (en Chile), asume miles. Si dice "gambas", son cientos. Si dice "quinas" está aludiendo a la moneda de quinientos (ej. 3 quinas = 1500). Si es un reembolso, el monto sigue siendo positivo pero el tipo cambia.
 3. 'tipo': Debe ser estrictamente "Ingreso" o "Gasto". (Si fue un Egreso, es gasto. Si dice "me pagaron", "sueldo", "reembolso", "devolución", es Ingreso).
 4. 'concepto': Breve resumen de la transacción en 1 o 2 palabras (ej. "Uber", "Cerveza", "Sueldo", "Deuda Pedro").
-5. 'categoria': DEBE ser EXACTAMENTE una de las siguientes opciones textuales: {CATEGORIAS_DISPONIBLES}.
+5. 'categoria': DEBE ser EXACTAMENTE una de las siguientes opciones textuales: {categorias_disponibles}.
 6. 'metodo': Debe ser "Débito", "Crédito", "Efectivo", "Transferencia", o "Otro". Si no menciona, asume "Débito".
 7. 'fecha': Deduce la fecha exacta en formato YYYY-MM-DD. Si no hay referencia, asume {hoy}. Debes tener cuidado, la compra puede aludir al futuro pero haber ocurrido en el presente o pasado. Por ejemplo puedo comprar algo hoy para una actividad de la próxima semana.
 8. 'comentarios': Opcional, guarda notas extra para entender el movimiento al revisar los datos.
 9. 'es_ambiguo': Si el gasto puede encajar razonablemente en dos o más categorías distintas (por ejemplo, "4 lucas de helado" o "10k cervezas" pueden ser 'Alimentación' o 'Salidas', "regalo" puede ser 'Otros Gastos' o 'Mesada', "15k uber al estadio" puede ser 'Transporte' o 'Salidas'), debes marcar esto como true.
-10. 'opciones_categoria': Si marcaste 'es_ambiguo' como true, debes enviar un arreglo con las 2 opciones de categoría más probables sacadas estrictamente de {CATEGORIAS_DISPONIBLES}. Si es_ambiguo es false, devuelve un arreglo vacío.
+10. 'opciones_categoria': Si marcaste 'es_ambiguo' como true, debes enviar un arreglo con las 2 opciones de categoría más probables sacadas estrictamente de {categorias_disponibles}. Si es_ambiguo es false, devuelve un arreglo vacío.
 """
 
 class TransactionExtraction(BaseModel):
@@ -92,7 +87,7 @@ class MultiTransactionExtraction(BaseModel):
     """Esquema para extraer múltiples transacciones."""
     transacciones: list[TransactionExtraction]
 
-def parse_transaction_message(text: str, message_id: str) -> ParseResult:
+def parse_transaction_message(text: str, message_id: str, categorias_disponibles: list[str]) -> ParseResult:
     """
     Parsea un mensaje de texto usando Regex o Gemini AI y devuelve un ParseResult.
     """
@@ -114,7 +109,7 @@ def parse_transaction_message(text: str, message_id: str) -> ParseResult:
         chat = client.chats.create(
             model='gemini-flash-lite-latest',
             config=types.GenerateContentConfig(
-                system_instruction=get_system_prompt(),
+                system_instruction=get_system_prompt(categorias_disponibles),
                 response_mime_type="application/json",
                 response_schema=TransactionExtraction,
                 temperature=0.01
@@ -229,7 +224,7 @@ Responde directamente, sin usar markdown extra de código JSON o saludos muy for
         logger.error(f"Error en consulta natural: {e}")
         raise ValueError("Lo siento, mis circuitos analíticos fallaron al procesar tantos datos. Intenta nuevamente.")
 
-def parse_multi_transaction_message(text: str, base_message_id: str) -> list[Transaction]:
+def parse_multi_transaction_message(text: str, base_message_id: str, categorias_disponibles: list[str]) -> list[Transaction]:
     """
     Parsea un mensaje que contiene múltiples gastos usando Gemini.
     Asigna IDs secuenciales basados en el base_message_id.
@@ -241,7 +236,7 @@ def parse_multi_transaction_message(text: str, base_message_id: str) -> list[Tra
         
     client = genai.Client(api_key=api_key)
     
-    prompt_multi = get_system_prompt()
+    prompt_multi = get_system_prompt(categorias_disponibles)
     prompt_multi += "\n\nREGLA ESPECIAL PARA MÚLTIPLES REGISTROS:\n"
     prompt_multi += "El usuario enviará múltiples transacciones en un solo mensaje.\n"
     prompt_multi += "Debes extraer TODAS en el arreglo 'transacciones'.\n"
