@@ -6,6 +6,7 @@ from decimal import Decimal
 from datetime import date
 from enum import Enum
 from collections import defaultdict
+import unicodedata
 from pydantic import BaseModel
 from google import genai
 from google.genai import types
@@ -13,6 +14,11 @@ from google.genai import types
 from src.models import Transaction, TipoTransaccion, MetodoPago, get_hoy_santiago
 
 logger = logging.getLogger(__name__)
+
+def quitar_acentos(s: str) -> str:
+    if not s:
+        return ""
+    return ''.join(c for c in unicodedata.normalize('NFD', str(s)) if unicodedata.category(c) != 'Mn')
 
 # Archivo de categorías ahora es dinámico desde Google Sheets
 CATEGORIAS_DICT = {}
@@ -283,7 +289,8 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
         
         # Filtramos por categoría si viene explícita (para Totales y Promedios)
         if categoria_obj and intent in [IntentType.GASTO_TOTAL, IntentType.GASTO_PROMEDIO]:
-            gastos = [tx for tx in gastos if categoria_obj.lower() in tx.get('categoria', '').lower()]
+            cat_obj_norm = quitar_acentos(categoria_obj.lower())
+            gastos = [tx for tx in gastos if cat_obj_norm in quitar_acentos(tx.get('categoria', '').lower())]
 
         respuesta_final = ""
         
@@ -336,9 +343,10 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
             
         elif intent == IntentType.DESGLOSE_CATEGORIA:
             desglose = defaultdict(Decimal)
+            cat_obj_norm = quitar_acentos(categoria_obj.lower()) if categoria_obj else ""
             for tx in gastos:
                 cat = tx.get('categoria', 'Sin Categoría')
-                if categoria_obj and categoria_obj.lower() not in cat.lower():
+                if cat_obj_norm and cat_obj_norm not in quitar_acentos(cat.lower()):
                     continue
                 desglose[cat] += Decimal(str(tx.get('monto', 0)).replace(',','').replace('$',''))
             
