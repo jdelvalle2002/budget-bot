@@ -116,7 +116,12 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
                 msg_exito = f"✅ Edición guardada exitosamente en la categoría *{categoria_elegida}*."
             else:
                 success = sheets_client.append_transaction(session.pending_transaction)
+                from src.parser import generar_comentario_ironico
+                chiste = generar_comentario_ironico(session.pending_transaction.monto, session.pending_transaction.concepto, session.pending_transaction.categoria)
+                
                 msg_exito = f"✅ Registrado exitosamente en la categoría *{categoria_elegida}*."
+                if chiste:
+                    msg_exito += f"\n\n🤖 _Comentario: {chiste}_"
                 
             if success:
                 reply_markup = {
@@ -406,8 +411,12 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
                     f"- *Tipo:* {parse_result.transaction.tipo.value}\n"
                     f"- *Fecha:* {parse_result.transaction.fecha}\n"
                     f"- *Metodo:* {parse_result.transaction.metodo.value}\n"
-                    f"- *Concepto:* {parse_result.transaction.concepto}"
                 )
+                
+                from src.parser import generar_comentario_ironico
+                chiste = generar_comentario_ironico(parse_result.transaction.monto, parse_result.transaction.concepto, parse_result.transaction.categoria)
+                if chiste:
+                    respuesta += f"\n\n🤖 _Comentario: {chiste}_"
                 
                 # Adjuntamos botones para editar o deshacer
                 reply_markup = {

@@ -195,6 +195,7 @@ class FiltroTiempo(str, Enum):
 
 class IntentType(str, Enum):
     GASTO_TOTAL = "gasto_total"
+    GASTO_PROMEDIO = "gasto_promedio"
     DESGLOSE_CATEGORIA = "desglose_categoria"
     DESGLOSE_METODO = "desglose_metodo"
     BUSQUEDA_ESPECIFICA = "busqueda_especifica"
@@ -251,7 +252,8 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
         raise ValueError("La variable GEMINI_API_KEY no está configurada.")
         
     client = genai.Client(api_key=api_key)
-    hoy = get_hoy_santiago().isoformat()
+    hoy_date = get_hoy_santiago()
+    hoy = hoy_date.isoformat()
     
     prompt_router = f"""
     Hoy es {hoy}. 
@@ -279,11 +281,45 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
         # Filtramos solo gastos por defecto, salvo que sea búsqueda
         gastos = [tx for tx in txs_filtradas if str(tx.get('tipo', '')).lower() == 'gasto']
         
+        # Filtramos por categoría si viene explícita (para Totales y Promedios)
+        if categoria_obj and intent in [IntentType.GASTO_TOTAL, IntentType.GASTO_PROMEDIO]:
+            gastos = [tx for tx in gastos if categoria_obj.lower() in tx.get('categoria', '').lower()]
+
         respuesta_final = ""
         
         if intent == IntentType.GASTO_TOTAL:
             total = sum(Decimal(str(tx.get('monto', 0)).replace(',','').replace('$','')) for tx in gastos)
-            respuesta_final = f"📊 Tu gasto total ({filtro_tiempo.value.replace('_', ' ')}) es de **${total:,.0f}**."
+            cat_str = f" en {categoria_obj}" if categoria_obj else ""
+            respuesta_final = f"📊 Tu gasto total{cat_str} ({filtro_tiempo.value.replace('_', ' ')}) es de **${total:,.0f}**."
+            
+        elif intent == IntentType.GASTO_PROMEDIO:
+            total = sum(Decimal(str(tx.get('monto', 0)).replace(',','').replace('$','')) for tx in gastos)
+            import calendar
+            dias = 1
+            if filtro_tiempo == FiltroTiempo.ESTE_MES:
+                dias = hoy_date.day
+            elif filtro_tiempo == FiltroTiempo.MES_PASADO:
+                mes_pasado = hoy_date.month - 1 if hoy_date.month > 1 else 12
+                año_pasado = hoy_date.year if hoy_date.month > 1 else hoy_date.year - 1
+                dias = calendar.monthrange(año_pasado, mes_pasado)[1]
+            elif filtro_tiempo == FiltroTiempo.ESTE_AÑO:
+                dias = (hoy_date - date(hoy_date.year, 1, 1)).days + 1
+            elif filtro_tiempo == FiltroTiempo.SIEMPRE:
+                if gastos:
+                    fechas_validas = []
+                    for tx in gastos:
+                        try:
+                            f = tx.get('fecha', '').split("T")[0]
+                            fechas_validas.append(date.fromisoformat(f))
+                        except: pass
+                    if fechas_validas:
+                        primera = min(fechas_validas)
+                        dias = (hoy_date - primera).days + 1
+                dias = max(1, dias)
+                
+            promedio = total / Decimal(dias)
+            cat_str = f" en {categoria_obj}" if categoria_obj else ""
+            respuesta_final = f"📉 **Promedio Diario{cat_str} ({filtro_tiempo.value.replace('_', ' ')}):**\nHas gastado una media de **${promedio:,.0f} al día**."
             
         elif intent == IntentType.DESGLOSE_METODO:
             desglose = defaultdict(Decimal)
@@ -328,6 +364,34 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
     except Exception as e:
         logger.error(f"Error en consulta natural determinista: {e}")
         raise ValueError("Lo siento, mis circuitos analíticos fallaron al clasificar tu intención. Intenta nuevamente.")
+
+def generar_comentario_ironico(monto: Decimal, concepto: str, categoria: str) -> str:
+    """
+    Genera un comentario breve e irónico sobre una transacción recién registrada.
+    """
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        return ""
+        
+    client = genai.Client(api_key=api_key)
+    
+    prompt = (
+        f"Acabo de registrar este gasto: ${monto:,.0f} "
+        f"en '{concepto}' (Categoría: {categoria}). "
+        f"Genera un comentario de 1 sola frase muy breve, irónico y un poco sarcástico sobre este gasto para responderle al usuario. "
+        f"Hazlo amigable pero con ese toque de humor financiero. No uses formato markdown complejo."
+    )
+    
+    try:
+        chat = client.chats.create(
+            model='gemini-flash-lite-latest',
+            config=types.GenerateContentConfig(temperature=0.85)
+        )
+        response = chat.send_message(prompt)
+        return response.text.strip()
+    except Exception as e:
+        logger.error(f"Error generando comentario ironico: {e}")
+        return ""
 
 def parse_multi_transaction_message(text: str, base_message_id: str, categorias_disponibles: list[str]) -> list[Transaction]:
     """
