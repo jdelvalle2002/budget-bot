@@ -259,6 +259,9 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         
         # Generar gráfico
         try:
+            from src.models import get_hoy_santiago
+            hora_gen = get_hoy_santiago().strftime("%d/%m/%Y %H:%M")
+            
             fig, ax = plt.subplots(figsize=(8, 6), subplot_kw=dict(aspect="equal"))
             
             wedges, texts, autotexts = ax.pie(
@@ -267,7 +270,8 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             )
             
             ax.legend(wedges, categorias, title="Categorías", loc="center left", bbox_to_anchor=(1, 0, 0.5, 1))
-            ax.set_title(f"Gastos - Mes {t_month:02d}/{t_year}", pad=20, fontsize=14, fontweight="bold")
+            fig.suptitle(f"Gastos - Mes {t_month:02d}/{t_year}", fontsize=14, fontweight="bold", y=0.98)
+            ax.set_title(f"Generado el: {hora_gen}", fontsize=10, color="gray", pad=15)
             
             buf = io.BytesIO()
             plt.savefig(buf, format='png', bbox_inches="tight")
