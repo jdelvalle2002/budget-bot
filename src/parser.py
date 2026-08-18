@@ -211,7 +211,7 @@ def filtrar_transacciones(transacciones: list[dict], filtro_tiempo: FiltroTiempo
     
     for tx in transacciones:
         # Extraer fecha
-        fecha_str = tx.get('Fecha', '')
+        fecha_str = tx.get('fecha', '')
         if not fecha_str:
             continue
             
@@ -277,19 +277,19 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
         txs_filtradas = filtrar_transacciones(transacciones, filtro_tiempo)
         
         # Filtramos solo gastos por defecto, salvo que sea búsqueda
-        gastos = [tx for tx in txs_filtradas if str(tx.get('Tipo', '')).lower() == 'gasto']
+        gastos = [tx for tx in txs_filtradas if str(tx.get('tipo', '')).lower() == 'gasto']
         
         respuesta_final = ""
         
         if intent == IntentType.GASTO_TOTAL:
-            total = sum(Decimal(str(tx.get('Monto', 0)).replace(',','').replace('$','')) for tx in gastos)
+            total = sum(Decimal(str(tx.get('monto', 0)).replace(',','').replace('$','')) for tx in gastos)
             respuesta_final = f"📊 Tu gasto total ({filtro_tiempo.value.replace('_', ' ')}) es de **${total:,.0f}**."
             
         elif intent == IntentType.DESGLOSE_METODO:
             desglose = defaultdict(Decimal)
             for tx in gastos:
-                metodo = tx.get('Metodo', 'Desconocido')
-                desglose[metodo] += Decimal(str(tx.get('Monto', 0)).replace(',','').replace('$',''))
+                metodo = tx.get('metodo', 'Desconocido')
+                desglose[metodo] += Decimal(str(tx.get('monto', 0)).replace(',','').replace('$',''))
             
             respuesta_final = f"💳 **Desglose por Método de Pago ({filtro_tiempo.value.replace('_', ' ')}):**\n"
             total = Decimal(0)
@@ -301,10 +301,10 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
         elif intent == IntentType.DESGLOSE_CATEGORIA:
             desglose = defaultdict(Decimal)
             for tx in gastos:
-                cat = tx.get('Categoría', 'Sin Categoría')
+                cat = tx.get('categoria', 'Sin Categoría')
                 if categoria_obj and categoria_obj.lower() not in cat.lower():
                     continue
-                desglose[cat] += Decimal(str(tx.get('Monto', 0)).replace(',','').replace('$',''))
+                desglose[cat] += Decimal(str(tx.get('monto', 0)).replace(',','').replace('$',''))
             
             respuesta_final = f"📁 **Desglose por Categoría ({filtro_tiempo.value.replace('_', ' ')}):**\n"
             total = Decimal(0)
