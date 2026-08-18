@@ -204,9 +204,12 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         msg = (
             "🤖 *Comandos Disponibles:*\n\n"
             "Solo escríbeme lo que gastaste (ej: _'15000 en uber'_).\n\n"
-            "O usa estos comandos:\n"
-            "📊 `/resumen` : Ver tus gastos acumulados del mes por categoría.\n"
-            "🕰️ `/ultimas` : Ver tus últimos 5 registros y modificarlos.\n"
+            "O usa estos comandos avanzados:\n"
+            "📊 `/resumen` : Ver tus gastos del mes.\n"
+            "⏪ `/resumen anterior` : Ver tus gastos del mes pasado.\n"
+            "🕰️ `/ultimas` : Ver tus últimos 5 registros (te permite Editarlos o Borrarlos).\n"
+            "📦 `/multi [gastos]` : Registra varios gastos de una sola vez separados por comas (ej: _/multi 15k uber, 50k super_).\n"
+            "💡 `? [pregunta]` : Hazme cualquier consulta analítica sobre tus datos (ej: _? en qué gasté más este mes_).\n"
             "❓ `/ayuda` : Ver este mensaje."
         )
         await enviar_mensaje_telegram(chat_id, msg)
@@ -236,12 +239,12 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         categorias = []
         montos = []
         
-        # Diccionario de colores fijos para mantener consistencia visual
+        # Diccionario de colores fijos (Vibrantes)
         CATEGORY_COLORS = {
-            "Alimentación": "#ff9999", "Deportes": "#66b3ff", "Hogar": "#99ff99", 
-            "Inversiones": "#ffcc99", "Mesada": "#c2c2f0", "Salidas": "#ffb3e6", 
-            "Salud": "#c4e17f", "Telefonía": "#76D7C4", "Transporte": "#F7DC6F", 
-            "Remuneraciones": "#82E0AA", "Otros Gastos": "#BFC9CA", "Otros Ingresos": "#F8C471"
+            "Alimentación": "#E74C3C", "Deportes": "#3498DB", "Hogar": "#2ECC71", 
+            "Inversiones": "#F39C12", "Mesada": "#9B59B6", "Salidas": "#E84393", 
+            "Salud": "#16A085", "Telefonía": "#1ABC9C", "Transporte": "#F1C40F", 
+            "Remuneraciones": "#27AE60", "Otros Gastos": "#7F8C8D", "Otros Ingresos": "#D35400"
         }
         default_colors = plt.cm.tab20.colors
         colores_usados = []
@@ -260,7 +263,7 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         # Generar gráfico
         try:
             from src.models import get_hoy_santiago
-            hora_gen = get_hoy_santiago().strftime("%d/%m/%Y %H:%M")
+            hora_gen = get_hoy_santiago().strftime("%d/%m/%Y")
             
             fig, ax = plt.subplots(figsize=(8, 6), subplot_kw=dict(aspect="equal"))
             
