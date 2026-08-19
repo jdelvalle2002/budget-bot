@@ -93,6 +93,24 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
     """
     session = get_user_session(int(chat_id))
 
+    texto_limpio = text.strip().lower()
+    
+    comandos_sistema = ["/ayuda", "ayuda", "help", "/cancelar", "cancelar", "/buscar", "/ultimas", "últimas", "ultimas", "/resumen", "resumen", "/multi", "/start", "start", "hola", "buenas"]
+    is_command = any(texto_limpio.startswith(cmd) for cmd in comandos_sistema) or texto_limpio.startswith("?")
+    
+    if is_command or texto_limpio == "cancelar":
+        if session.state != UserState.IDLE:
+            session.state = UserState.IDLE
+            session.pending_transaction = None
+            session.options = []
+            session.edit_transaction_id = None
+            if texto_limpio in ["/cancelar", "cancelar"]:
+                await enviar_mensaje_telegram(chat_id, "🚫 Operación cancelada.")
+                return
+        elif texto_limpio in ["/cancelar", "cancelar"]:
+            await enviar_mensaje_telegram(chat_id, "ℹ️ No había ninguna operación pendiente.")
+            return
+
     # --- FLUJO 1: ESPERANDO CONFIRMACIÓN DE CATEGORÍA ---
     if session.state == UserState.AWAITING_CONFIRMATION:
         categoria_elegida = None
@@ -137,7 +155,7 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             else:
                 await enviar_mensaje_telegram(chat_id, "❌ Error guardando en Google Sheets.")
         else:
-            await enviar_mensaje_telegram(chat_id, "❌ Operación cancelada. Puedes escribir tu gasto de nuevo.")
+            await enviar_mensaje_telegram(chat_id, "⚠️ Descartando gasto ambiguo para procesar tu nuevo mensaje.")
             
         # Limpiar estado en ambos casos (éxito o cancelación)
         session.state = UserState.IDLE
@@ -145,7 +163,8 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         session.options = []
         session.edit_transaction_id = None
         
-        return
+        if categoria_elegida:
+            return
 
     # --- FLUJO 2: EDITANDO UNA TRANSACCIÓN (TEXTO LIBRE) ---
     if session.state == UserState.AWAITING_EDIT:
@@ -197,15 +216,13 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             session.edit_transaction_id = None
             
         except ValueError as ve:
-            await enviar_mensaje_telegram(chat_id, f"⚠️ No pude entender la corrección:\n_{ve}_")
+            await enviar_mensaje_telegram(chat_id, f"⚠️ No pude entender la corrección:\n_{ve}_\n\n_(Si quieres salir del modo edición, escribe /cancelar)_")
         except Exception as e:
             logger.error(f"Error en edición: {e}")
             await enviar_mensaje_telegram(chat_id, "❌ Error interno procesando tu edición.")
         return
 
     # --- FLUJO 3: MENSAJE NUEVO ---
-    texto_limpio = text.strip().lower()
-    
     # Comandos de Sistema
     if texto_limpio in ["/ayuda", "ayuda", "help"]:
         msg = (
