@@ -367,7 +367,7 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
                 prompt_opinion = f"Acabo de calcular este gasto: {respuesta_final}. Dame 1 frase amable, amistosa y súper breve opinando sobre esta distribución de gastos. No des formato markdown."
                 chat_op = client.chats.create(model='gemini-flash-lite-latest')
                 opinion = chat_op.send_message(prompt_opinion)
-                respuesta_final += f"\n\n🤖 _Comentario: {opinion.text.strip()}_"
+                respuesta_final += f"\n\n🤖 _{opinion.text.strip()}_"
                 
         elif intent == IntentType.BUSQUEDA_ESPECIFICA and (concepto_objetivo or categoria_obj):
             termino = concepto_objetivo if concepto_objetivo else categoria_obj

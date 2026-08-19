@@ -140,7 +140,7 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
                 
                 msg_exito = f"✅ Registrado exitosamente en la categoría *{categoria_elegida}*."
                 if chiste:
-                    msg_exito += f"\n\n🤖 _Comentario: {chiste}_"
+                    msg_exito += f"\n\n🤖 _{chiste}_"
                 
             if success:
                 reply_markup = {
@@ -334,7 +334,7 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             # Emoji según tipo
             emoji = "🔴" if str(tx.get("tipo", "")).lower() == "gasto" else "🟢"
             
-            comentario_str = f"\n📝 _Comentario: {tx.get('comentarios', '')}_" if tx.get('comentarios') else ""
+            comentario_str = f"\n📝 _{tx.get('comentarios', '')}_" if tx.get('comentarios') else ""
             
             detalle = (
                 f"{emoji} *{tx['concepto']}* ({format_currency(tx['monto'])})\n"
@@ -370,7 +370,7 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         
         for tx in resultados:
             emoji = "🔴" if str(tx.get("tipo", "")).lower() == "gasto" else "🟢"
-            comentario_str = f"\n📝 _Comentario: {tx.get('comentarios', '')}_" if tx.get('comentarios') else ""
+            comentario_str = f"\n📝 _{tx.get('comentarios', '')}_" if tx.get('comentarios') else ""
             
             detalle = (
                 f"{emoji} *{tx['concepto']}* ({format_currency(tx['monto'])})\n"
@@ -490,7 +490,7 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
                 from src.parser import generar_comentario_ironico
                 chiste = generar_comentario_ironico(parse_result.transaction.monto, parse_result.transaction.concepto, parse_result.transaction.categoria)
                 if chiste:
-                    respuesta += f"\n\n🤖 _Comentario: {chiste}_"
+                    respuesta += f"\n\n🤖 _{chiste}_"
                 
                 # Adjuntamos botones para editar o deshacer
                 reply_markup = {
