@@ -14,18 +14,18 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 DEFAULT_CATEGORIES = [
-    ["Alimentación", "#E74C3C"],
-    ["Deportes", "#3498DB"],
-    ["Hogar", "#2ECC71"],
-    ["Inversiones", "#F39C12"],
-    ["Mesada", "#9B59B6"],
-    ["Salidas", "#E84393"],
-    ["Salud", "#16A085"],
-    ["Telefonía", "#1ABC9C"],
-    ["Transporte", "#F1C40F"],
-    ["Remuneraciones", "#27AE60"],
-    ["Otros Gastos", "#7F8C8D"],
-    ["Otros Ingresos", "#D35400"]
+    ["Alimentación", "#E74C3C", ""],
+    ["Deportes", "#3498DB", ""],
+    ["Hogar", "#2ECC71", ""],
+    ["Inversiones", "#F39C12", ""],
+    ["Mesada", "#9B59B6", ""],
+    ["Salidas", "#E84393", ""],
+    ["Salud", "#16A085", ""],
+    ["Telefonía", "#1ABC9C", ""],
+    ["Transporte", "#F1C40F", ""],
+    ["Remuneraciones", "#27AE60", ""],
+    ["Otros Gastos", "#7F8C8D", ""],
+    ["Otros Ingresos", "#D35400", ""]
 ]
 
 def setup_sheet(sheet_id: str):
@@ -92,10 +92,10 @@ def setup_sheet(sheet_id: str):
     
     # 4. Poblar 'Config'
     logger.info("Poblando 'Config'...")
-    config_values = [["Categoría", "Color Hex (Gráficos)"]] + DEFAULT_CATEGORIES
+    config_values = [["Categoría", "Color Hex (Gráficos)", "Presupuesto"]] + DEFAULT_CATEGORIES
     service.spreadsheets().values().update(
         spreadsheetId=sheet_id,
-        range="Config!A1:B",
+        range="Config!A1:C",
         valueInputOption="USER_ENTERED",
         body={"values": config_values}
     ).execute()

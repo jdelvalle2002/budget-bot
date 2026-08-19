@@ -406,7 +406,7 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
         logger.error(f"Error en consulta natural determinista: {e}")
         raise ValueError("Lo siento, mis circuitos analíticos fallaron al clasificar tu intención. Intenta nuevamente.")
 
-def generar_comentario_ironico(monto: Decimal, concepto: str, categoria: str) -> str:
+def generar_comentario_ironico(monto: Decimal, concepto: str, categoria: str, estado_presupuesto: str | None = None) -> str:
     """
     Genera un comentario breve e irónico sobre una transacción recién registrada.
     """
@@ -417,10 +417,13 @@ def generar_comentario_ironico(monto: Decimal, concepto: str, categoria: str) ->
     client = genai.Client(api_key=api_key)
     
     bot_context = os.getenv("BOT_CONTEXT", "Chile, usando pesos chilenos sin decimales.")
+    
+    presupuesto_str = f"\nOJO, DATO VITAL: {estado_presupuesto} Sé pesado y castigador si está cerca de pasarse o ya se pasó de su límite mensual.\n" if estado_presupuesto else ""
+    
     prompt = (
         f"Actúa como un amigo sarcástico y sin filtro que está fiscalizando mi gastos y cuenta bancaria. "
         f"Acabo de gastar {format_currency(monto)} en '{concepto}' (Categoría: {categoria}).\n"
-        f"Contexto económico: {bot_context}\n"
+        f"Contexto económico: {bot_context}\n{presupuesto_str}"
         f"Escribe un comentario breve de 1 o 2 oraciones reaccionando a este gasto con tono humorístico y burlón.\n"
         f"EJEMPLO DE REPRIMENDA: Si el gasto es alto en transporte privado (como Uber) o en salidas/fiestas, "
         f"réteme de forma graciosa. Cuestiona mi pereza o mi nulo autocontrol sin piedad.\n"

@@ -367,8 +367,8 @@ class GoogleSheetsClient:
 
     def load_categories_from_config(self, force_refresh: bool = False) -> dict:
         """
-        Lee la pestaña 'Config' (A:B) para obtener las categorías y sus colores.
-        Retorna un dict: {"Alimentación": "#E74C3C", ...}
+        Lee la pestaña 'Config' (A:C) para obtener las categorías, colores y presupuesto.
+        Retorna un dict: {"Alimentación": {"color": "#E74C3C", "presupuesto": 200000}, ...}
         """
         if hasattr(self, '_cached_categories') and self._cached_categories and not force_refresh:
             return self._cached_categories
@@ -376,7 +376,7 @@ class GoogleSheetsClient:
         try:
             result = self.sheet.values().get(
                 spreadsheetId=self.spreadsheet_id,
-                range="Config!A2:B"
+                range="Config!A2:C"
             ).execute()
             values = result.get('values', [])
             
@@ -384,8 +384,18 @@ class GoogleSheetsClient:
             for row in values:
                 if len(row) > 0 and row[0].strip():
                     cat_name = row[0].strip()
-                    cat_color = row[1].strip() if len(row) > 1 else None
-                    categorias[cat_name] = cat_color
+                    cat_color = row[1].strip() if len(row) > 1 and row[1].strip() else None
+                    
+                    presupuesto = None
+                    if len(row) > 2 and row[2].strip():
+                        try:
+                            # Permitir formatos numéricos con símbolos
+                            presup_str = str(row[2]).replace('$', '').replace('€', '').replace(',', '').strip()
+                            presupuesto = float(presup_str)
+                        except ValueError:
+                            presupuesto = None
+                            
+                    categorias[cat_name] = {"color": cat_color, "presupuesto": presupuesto}
                     
             self._cached_categories = categorias
             return categorias
@@ -393,8 +403,16 @@ class GoogleSheetsClient:
             logger.error(f"Error leyendo Config: {e}. Asegúrate de haber ejecutado setup_sheet.py")
             # Fallback hardcodeado si falla la API o la pestaña no existe
             return {
-                "Alimentación": "#E74C3C", "Deportes": "#3498DB", "Hogar": "#2ECC71", 
-                "Inversiones": "#F39C12", "Mesada": "#9B59B6", "Salidas": "#E84393", 
-                "Salud": "#16A085", "Telefonía": "#1ABC9C", "Transporte": "#F1C40F", 
-                "Remuneraciones": "#27AE60", "Otros Gastos": "#7F8C8D", "Otros Ingresos": "#D35400"
+                "Alimentación": {"color": "#E74C3C", "presupuesto": None},
+                "Deportes": {"color": "#3498DB", "presupuesto": None},
+                "Hogar": {"color": "#2ECC71", "presupuesto": None},
+                "Inversiones": {"color": "#F39C12", "presupuesto": None},
+                "Mesada": {"color": "#9B59B6", "presupuesto": None},
+                "Salidas": {"color": "#E84393", "presupuesto": None},
+                "Salud": {"color": "#16A085", "presupuesto": None},
+                "Telefonía": {"color": "#1ABC9C", "presupuesto": None},
+                "Transporte": {"color": "#F1C40F", "presupuesto": None},
+                "Remuneraciones": {"color": "#27AE60", "presupuesto": None},
+                "Otros Gastos": {"color": "#7F8C8D", "presupuesto": None},
+                "Otros Ingresos": {"color": "#D35400", "presupuesto": None}
             }

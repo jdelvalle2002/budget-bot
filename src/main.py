@@ -135,8 +135,33 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
                 msg_exito = f"✅ Edición guardada exitosamente en la categoría *{categoria_elegida}*."
             else:
                 success = sheets_client.append_transaction(session.pending_transaction)
+                
+                # INYECCIÓN DE PRESUPUESTO (Solo para gastos nuevos y estrictos)
+                estado_presupuesto = None
+                if str(session.pending_transaction.tipo.value).lower() == "gasto":
+                    from src.models import format_currency
+                    is_strict = categoria_elegida not in ["Ahorro", "Inversiones", "Salud", "Cuentas Básicas", "Educación", "Remuneraciones", "Otros Ingresos"]
+                    
+                    if is_strict and sheets_client:
+                        cat_config = sheets_client.load_categories_from_config().get(categoria_elegida, {})
+                        presupuesto = cat_config.get("presupuesto") if isinstance(cat_config, dict) else None
+                        
+                        if presupuesto and presupuesto > 0:
+                            resumen, _, _ = sheets_client.get_month_summary(0)
+                            gasto_actual = resumen.get(categoria_elegida, {}).get("total", 0)
+                            
+                            if gasto_actual > presupuesto:
+                                estado_presupuesto = f"Lleva gastado {format_currency(gasto_actual)} en el mes, y su límite es {format_currency(presupuesto)}. ¡Se excedió!"
+                            elif gasto_actual >= presupuesto * 0.8:
+                                estado_presupuesto = f"Lleva gastado {format_currency(gasto_actual)} en el mes, y su límite es {format_currency(presupuesto)}. ¡Está peligrosamente cerca!"
+                
                 from src.parser import generar_comentario_ironico
-                chiste = generar_comentario_ironico(session.pending_transaction.monto, session.pending_transaction.concepto, session.pending_transaction.categoria)
+                chiste = generar_comentario_ironico(
+                    session.pending_transaction.monto, 
+                    session.pending_transaction.concepto, 
+                    session.pending_transaction.categoria,
+                    estado_presupuesto=estado_presupuesto
+                )
                 
                 msg_exito = f"✅ Registrado exitosamente en la categoría *{categoria_elegida}*."
                 if chiste:
@@ -235,7 +260,8 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             "📦 `/multi [gastos]` : Registra varios gastos de una sola vez separados por comas (ej: _/multi 15k uber, 50k super_).\n"
             "🔎 `/buscar [texto]` : Busca registros por concepto o comentario (ej: _/buscar uber_).\n"
             "💡 `? [pregunta]` : Hazme cualquier consulta analítica sobre tus datos (ej: _? en qué gasté más este mes_).\n"
-            "❓ `/ayuda` : Ver este mensaje."
+            "❓ `/ayuda` : Ver este mensaje.\n\n"
+            "💡 *Tip:* Puedes entrar a tu planilla de Sheets y agregar montos en la nueva columna 'Presupuesto' de la pestaña 'Config' para que el bot controle tus límites mensuales."
         )
         await enviar_mensaje_telegram(chat_id, msg)
         return
@@ -264,18 +290,34 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         categorias = []
         montos = []
         
-        # Diccionario de colores desde Config de Google Sheets
-        CATEGORY_COLORS = sheets_client.load_categories_from_config() if sheets_client else {}
+        # Diccionario de configuración desde Google Sheets
+        CATEGORY_CONFIG = sheets_client.load_categories_from_config() if sheets_client else {}
         default_colors = plt.cm.tab20.colors
         colores_usados = []
         
         for cat, datos in sorted(resumen.items(), key=lambda x: x[1]["total"], reverse=True):
-            msg_lineas.append(f"- *{cat}:* {format_currency(datos['total'])} ({datos['count']} txs)")
+            cat_config = CATEGORY_CONFIG.get(cat, {})
+            presupuesto = cat_config.get("presupuesto") if isinstance(cat_config, dict) else None
+            
+            if presupuesto and presupuesto > 0:
+                pct = (datos['total'] / presupuesto) * 100
+                is_strict = cat not in ["Ahorro", "Inversiones", "Salud", "Cuentas Básicas", "Educación", "Remuneraciones", "Otros Ingresos", "Hogar"]
+                
+                if pct > 100:
+                    alert = "🔴 EXCEDIDO" if is_strict else "🔵 Completado"
+                    msg_lineas.append(f"- *{cat}:* {format_currency(datos['total'])} / {format_currency(presupuesto)} ({pct:.0f}% {alert})")
+                else:
+                    msg_lineas.append(f"- *{cat}:* {format_currency(datos['total'])} / {format_currency(presupuesto)} ({pct:.0f}% 🟢)")
+            else:
+                msg_lineas.append(f"- *{cat}:* {format_currency(datos['total'])} ({datos['count']} txs)")
+                
             total += datos['total']
             categorias.append(cat)
             montos.append(datos['total'])
+            
             # Asignar color fijo o fallback
-            color = CATEGORY_COLORS.get(cat, default_colors[len(colores_usados) % len(default_colors)])
+            color_hex = cat_config.get("color") if isinstance(cat_config, dict) else None
+            color = color_hex if color_hex else default_colors[len(colores_usados) % len(default_colors)]
             colores_usados.append(color)
             
         msg_lineas.append(f"\n💰 *Total Gastado:* {format_currency(total)}")
