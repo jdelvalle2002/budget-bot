@@ -389,8 +389,23 @@ class GoogleSheetsClient:
                     presupuesto = None
                     if len(row) > 2 and row[2].strip():
                         try:
-                            # Permitir formatos numéricos con símbolos
-                            presup_str = str(row[2]).replace('$', '').replace('€', '').replace(',', '').strip()
+                            # Limpiar símbolos de moneda
+                            presup_str = str(row[2]).replace('$', '').replace('€', '').strip()
+                            
+                            # Heurística para separadores de miles vs decimales
+                            if presup_str.count('.') > 0:
+                                # Si el último punto tiene exactamente 3 dígitos a su derecha, asumimos separador de miles (ej. 200.000)
+                                if len(presup_str.split('.')[-1]) == 3:
+                                    presup_str = presup_str.replace('.', '')
+                                    
+                            if presup_str.count(',') > 0:
+                                # Si la última coma tiene 3 dígitos a su derecha, asumimos separador de miles (ej. 200,000)
+                                if len(presup_str.split(',')[-1]) == 3:
+                                    presup_str = presup_str.replace(',', '')
+                                else:
+                                    # Si no, asumimos que es separador decimal (ej. 15,50)
+                                    presup_str = presup_str.replace(',', '.')
+                                    
                             presupuesto = float(presup_str)
                         except ValueError:
                             presupuesto = None
