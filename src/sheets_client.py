@@ -94,8 +94,8 @@ class GoogleSheetsClient:
         False si hubo un error.
         """
         if not sheet_name:
-            from src.models import get_hoy_santiago
-            sheet_name = str(get_hoy_santiago().year)
+            from src.models import get_local_date
+            sheet_name = str(get_local_date().year)
             
         # Chequear Idempotencia
         range_name_ids = f"{sheet_name}!A:A"
@@ -127,8 +127,8 @@ class GoogleSheetsClient:
     def update_transaction(self, transaction: Transaction, sheet_name: str = None) -> bool:
         """Sobrescribe una transacción existente."""
         if not sheet_name:
-            from src.models import get_hoy_santiago
-            sheet_name = str(get_hoy_santiago().year)
+            from src.models import get_local_date
+            sheet_name = str(get_local_date().year)
             
         row_index = self._find_row_index(transaction.id_transaccion, sheet_name)
         if row_index == -1:
@@ -153,8 +153,8 @@ class GoogleSheetsClient:
     def append_multiple_transactions(self, transactions: list, sheet_name: str = None) -> bool:
         """Añade múltiples transacciones de una sola vez."""
         if not sheet_name:
-            from src.models import get_hoy_santiago
-            sheet_name = str(get_hoy_santiago().year)
+            from src.models import get_local_date
+            sheet_name = str(get_local_date().year)
             
         if not transactions:
             return True
@@ -177,8 +177,8 @@ class GoogleSheetsClient:
     def get_last_transactions(self, limit: int = 5, sheet_name: str = None) -> list[dict]:
         """Devuelve las últimas N transacciones registradas (útil para el bot de Telegram)."""
         if not sheet_name:
-            from src.models import get_hoy_santiago
-            sheet_name = str(get_hoy_santiago().year)
+            from src.models import get_local_date
+            sheet_name = str(get_local_date().year)
             
         range_name = f"{sheet_name}!A:H"
         try:
@@ -214,7 +214,8 @@ class GoogleSheetsClient:
                         "monto": monto,
                         "concepto": row[4],
                         "categoria": row[5],
-                        "metodo": row[6] if len(row) > 6 else "Desconocido"
+                        "metodo": row[6] if len(row) > 6 else "Desconocido",
+                        "comentarios": row[7] if len(row) > 7 else ""
                     }
                     transacciones.append(tx)
             
@@ -223,10 +224,63 @@ class GoogleSheetsClient:
             logger.error(f"Error obteniendo últimas transacciones: {e}")
             return []
 
+    def search_transactions(self, query: str, limit: int = 5, sheet_name: str = None) -> list[dict]:
+        """Busca transacciones que coincidan con el query (concepto, categoría, comentarios)."""
+        if not sheet_name:
+            from src.models import get_local_date
+            sheet_name = str(get_local_date().year)
+            
+        range_name = f"{sheet_name}!A:H"
+        try:
+            result = self.sheet.values().get(
+                spreadsheetId=self.spreadsheet_id,
+                range=range_name
+            ).execute()
+            values = result.get('values', [])
+            
+            if not values or len(values) <= 1:
+                return []
+                
+            filas_datos = values[1:]
+            filas_datos = [row for row in filas_datos if len(row) > 0 and str(row[0]).strip() != ""]
+            
+            query_lower = str(query).lower()
+            matched_transactions = []
+            
+            # Recorrer de más reciente a más antiguo
+            for row in reversed(filas_datos):
+                row_str = " ".join([str(cell).lower() for cell in row])
+                if query_lower in row_str:
+                    if len(row) >= 6:
+                        try:
+                            monto = float(str(row[3]).replace(',', ''))
+                        except ValueError:
+                            monto = 0
+                            
+                        tx = {
+                            "id": row[0],
+                            "fecha": row[1],
+                            "tipo": row[2],
+                            "monto": monto,
+                            "concepto": row[4],
+                            "categoria": row[5],
+                            "metodo": row[6] if len(row) > 6 else "Desconocido",
+                            "comentarios": row[7] if len(row) > 7 else ""
+                        }
+                        matched_transactions.append(tx)
+                        
+                        if len(matched_transactions) == limit:
+                            break
+                            
+            return matched_transactions
+        except Exception as e:
+            logger.error(f"Error buscando transacciones: {e}")
+            return []
+
     def get_month_summary(self, month_offset: int = 0, sheet_name: str = None) -> tuple[dict, int, int]:
         """Agrupa los gastos del mes indicado por categoría, retornando total y conteo."""
-        from src.models import get_hoy_santiago
-        hoy = get_hoy_santiago()
+        from src.models import get_local_date
+        hoy = get_local_date()
         
         if not sheet_name:
             sheet_name = str(hoy.year)
@@ -276,8 +330,8 @@ class GoogleSheetsClient:
     def delete_transaction(self, id_transaccion: str, sheet_name: str = None) -> bool:
         """Borra la fila de una transacción de forma definitiva."""
         if not sheet_name:
-            from src.models import get_hoy_santiago
-            sheet_name = str(get_hoy_santiago().year)
+            from src.models import get_local_date
+            sheet_name = str(get_local_date().year)
             
         row_index = self._find_row_index(id_transaccion, sheet_name)
         if row_index == -1:

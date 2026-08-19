@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from src.parser import parse_transaction_message
 from src.sheets_client import GoogleSheetsClient
 from src.state import get_user_session, UserState
+from src.models import format_currency
 
 # Cargar variables de entorno
 load_dotenv()
@@ -160,7 +161,7 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
                 
                 opciones_list = "\n".join([f"{i+1}. {op}" for i, op in enumerate(session.options)])
                 pregunta = (
-                    f"🤔 Parece que la corrección es por ${parse_result.transaction.monto:,.0f} en '{parse_result.transaction.concepto}'.\n"
+                    f"🤔 Parece que la corrección es por {format_currency(parse_result.transaction.monto)} en '{parse_result.transaction.concepto}'.\n"
                     f"No estoy seguro de la categoría. ¿Cuál es?\n"
                     f"{opciones_list}\n"
                     f"_(Responde con el número, el nombre de la categoría, o cualquier otra cosa para cancelar)_"
@@ -172,7 +173,7 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             if success:
                 respuesta = (
                     f"✅ *Registro Actualizado Exitosamente:*\n"
-                    f"- *Monto:* ${parse_result.transaction.monto:,.0f}\n"
+                    f"- *Monto:* {format_currency(parse_result.transaction.monto)}\n"
                     f"- *Categoría:* {parse_result.transaction.categoria}\n"
                     f"- *Tipo:* {parse_result.transaction.tipo.value}\n"
                     f"- *Fecha:* {parse_result.transaction.fecha}\n"
@@ -251,7 +252,7 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         colores_usados = []
         
         for cat, datos in sorted(resumen.items(), key=lambda x: x[1]["total"], reverse=True):
-            msg_lineas.append(f"- *{cat}:* ${datos['total']:,.0f} ({datos['count']} txs)")
+            msg_lineas.append(f"- *{cat}:* {format_currency(datos['total'])} ({datos['count']} txs)")
             total += datos['total']
             categorias.append(cat)
             montos.append(datos['total'])
@@ -259,12 +260,12 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             color = CATEGORY_COLORS.get(cat, default_colors[len(colores_usados) % len(default_colors)])
             colores_usados.append(color)
             
-        msg_lineas.append(f"\n💰 *Total Gastado:* ${total:,.0f}")
+        msg_lineas.append(f"\n💰 *Total Gastado:* {format_currency(total)}")
         
         # Generar gráfico
         try:
-            from src.models import get_hoy_santiago
-            hora_gen = get_hoy_santiago().strftime("%d/%m/%Y")
+            from src.models import get_local_date
+            hora_gen = get_local_date().strftime("%d/%m/%Y")
             
             fig, ax = plt.subplots(figsize=(8, 6), subplot_kw=dict(aspect="equal"))
             
@@ -303,9 +304,11 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             # Emoji según tipo
             emoji = "🔴" if str(tx.get("tipo", "")).lower() == "gasto" else "🟢"
             
+            comentario_str = f"\n📝 _Comentario: {tx.get('comentarios', '')}_" if tx.get('comentarios') else ""
+            
             detalle = (
-                f"{emoji} *{tx['concepto']}* (${tx['monto']:,.0f})\n"
-                f"📅 {tx['fecha']} | 📁 {tx['categoria']} | 💳 {tx['metodo']}"
+                f"{emoji} *{tx['concepto']}* ({format_currency(tx['monto'])})\n"
+                f"📅 {tx['fecha']} | 📁 {tx['categoria']} | 💳 {tx['metodo']}{comentario_str}"
             )
             
             reply_markup = {
@@ -319,15 +322,56 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             await enviar_mensaje_telegram(chat_id, detalle, reply_markup=reply_markup)
         return
 
-    saludos = ["hola", "buenas", "buenos dias", "buenos días", "buenas tardes", "buenas noches", "/start", "start", "hello"]
+    # Búsqueda (/buscar)
+    if texto_limpio.startswith("/buscar ") or texto_limpio == "/buscar":
+        texto_busqueda = text.replace("/buscar", "", 1).strip()
+        if not texto_busqueda:
+            await enviar_mensaje_telegram(chat_id, "ℹ️ Escribe lo que quieres buscar después del comando.\nEjemplo: `/buscar uber`")
+            return
+            
+        await enviar_mensaje_telegram(chat_id, f"⏳ Buscando '{texto_busqueda}'...")
+        resultados = sheets_client.search_transactions(query=texto_busqueda, limit=5)
+        
+        if not resultados:
+            await enviar_mensaje_telegram(chat_id, "ℹ️ No encontré registros que coincidan con tu búsqueda.")
+            return
+            
+        await enviar_mensaje_telegram(chat_id, f"🔎 *Resultados de búsqueda ({len(resultados)}):*")
+        
+        for tx in resultados:
+            emoji = "🔴" if str(tx.get("tipo", "")).lower() == "gasto" else "🟢"
+            comentario_str = f"\n📝 _Comentario: {tx.get('comentarios', '')}_" if tx.get('comentarios') else ""
+            
+            detalle = (
+                f"{emoji} *{tx['concepto']}* ({format_currency(tx['monto'])})\n"
+                f"📅 {tx['fecha']} | 📁 {tx['categoria']} | 💳 {tx['metodo']}{comentario_str}"
+            )
+            
+            reply_markup = {
+                "inline_keyboard": [
+                    [
+                        {"text": "✏️ Editar", "callback_data": f"edit:{tx['id']}"},
+                        {"text": "🗑️ Borrar", "callback_data": f"delete:{tx['id']}"}
+                    ]
+                ]
+            }
+            await enviar_mensaje_telegram(chat_id, detalle, reply_markup=reply_markup)
+        return
+
+    saludos = ["hola", "buenas", "buenos dias", "buenos días", "buenas tardes", "buenas noches", "/start", "start", "hello", "ayuda", "/ayuda"]
     if texto_limpio in saludos:
         mensaje_bienvenida = (
             "¡Hola! 👋 Soy tu Bot Financiero.\n"
-            "Dime qué gastaste o ingresaste y yo lo anotaré en tu planilla.\n"
-            "Ejemplos:\n"
+            "Dime qué gastaste o ingresaste y yo lo anotaré en tu planilla.\n\n"
+            "💡 *Ejemplos:*\n"
             "• _'Gasté 15000 en uber'_\n"
             "• _'Me pagaron 50 lucas que me debían'_\n"
-            "• _'? cuánto he gastado en transporte este mes'_"
+            "• _'? cuánto he gastado en transporte este mes'_\n\n"
+            "⚙️ *Comandos:*\n"
+            "• `/buscar <texto>` - Busca registros por concepto o comentario.\n"
+            "• `/ultimas` - Muestra los últimos 5 registros.\n"
+            "• `/multi` - Registra varios gastos a la vez.\n"
+            "• `/resumen` - Genera un gráfico del mes."
         )
         await enviar_mensaje_telegram(chat_id, mensaje_bienvenida)
         return
@@ -372,7 +416,7 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
                 resumen_lineas = [f"✅ *{len(transacciones)} Registros guardados:*"]
                 for tx in transacciones:
                     emoji = "🔴" if str(tx.tipo.value).lower() == "gasto" else "🟢"
-                    resumen_lineas.append(f"- {emoji} {tx.categoria}: ${tx.monto:,.0f} ({tx.concepto})")
+                    resumen_lineas.append(f"- {emoji} {tx.categoria}: {format_currency(tx.monto)} ({tx.concepto})")
                 resumen_lineas.append("\n_(Usa `/ultimas` si necesitas editar alguno)_")
                 
                 await enviar_mensaje_telegram(chat_id, "\n".join(resumen_lineas))
@@ -393,7 +437,7 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             
             opciones_list = "\n".join([f"{i+1}. {op}" for i, op in enumerate(session.options)])
             pregunta = (
-                f"🤔 Parece que gastaste ${parse_result.transaction.monto:,.0f} en '{parse_result.transaction.concepto}'.\n"
+                f"🤔 Parece que gastaste {format_currency(parse_result.transaction.monto)} en '{parse_result.transaction.concepto}'.\n"
                 f"No estoy seguro de la categoría. ¿Cuál es?\n"
                 f"{opciones_list}\n"
                 f"_(Responde con el número, el nombre de la categoría, o cualquier otra cosa para cancelar)_"
@@ -406,7 +450,7 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             if success:
                 respuesta = (
                     f"✅ Registrado exitosamente:\n"
-                    f"- *Monto:* ${parse_result.transaction.monto:,.0f}\n"
+                    f"- *Monto:* {format_currency(parse_result.transaction.monto)}\n"
                     f"- *Categoría:* {parse_result.transaction.categoria}\n"
                     f"- *Tipo:* {parse_result.transaction.tipo.value}\n"
                     f"- *Fecha:* {parse_result.transaction.fecha}\n"

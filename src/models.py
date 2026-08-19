@@ -8,9 +8,16 @@ except ImportError:
     from backports.zoneinfo import ZoneInfo
 from enum import Enum
 import uuid
+import os
 
-def get_hoy_santiago() -> date:
-    return datetime.now(ZoneInfo("America/Santiago")).date()
+def get_local_date() -> date:
+    tz_name = os.getenv("TZ_NAME", "America/Santiago")
+    return datetime.now(ZoneInfo(tz_name)).date()
+
+def format_currency(monto: Decimal) -> str:
+    symbol = os.getenv("CURRENCY_SYMBOL", "$")
+    decimals = int(os.getenv("CURRENCY_DECIMALS", "0"))
+    return f"{symbol}{monto:,.{decimals}f}"
 
 class TipoTransaccion(str, Enum):
     INGRESO = "Ingreso"
@@ -25,7 +32,7 @@ class MetodoPago(str, Enum):
 
 class Transaction(BaseModel):
     id_transaccion: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    fecha: date = Field(default_factory=get_hoy_santiago)
+    fecha: date = Field(default_factory=get_local_date)
     tipo: TipoTransaccion
     monto: Decimal
     concepto: str
@@ -36,7 +43,7 @@ class Transaction(BaseModel):
     @field_validator('fecha')
     @classmethod
     def fecha_dentro_de_rango(cls, v: date) -> date:
-        hoy = get_hoy_santiago()
+        hoy = get_local_date()
         if v > hoy:
             raise ValueError('No puedes registrar gastos o ingresos en el futuro.')
         diferencia = (hoy - v).days

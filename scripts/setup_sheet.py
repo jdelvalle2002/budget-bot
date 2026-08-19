@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.sheets_client import GoogleSheetsClient
-from src.models import get_hoy_santiago
+from src.models import get_local_date
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -41,7 +41,7 @@ def setup_sheet(sheet_id: str):
         return
         
     service = client.service
-    hoy = get_hoy_santiago()
+    hoy = get_local_date()
     current_year_str = str(hoy.year)
     
     # 1. Obtener pestañas actuales

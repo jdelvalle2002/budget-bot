@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from google import genai
 from google.genai import types
 
-from src.models import Transaction, TipoTransaccion, MetodoPago, get_hoy_santiago
+from src.models import Transaction, TipoTransaccion, MetodoPago, get_local_date, format_currency
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ def try_fast_path(text: str, message_id: str) -> ParseResult | None:
             if concepto_str in palabras:
                 tx = Transaction(
                     id_transaccion=message_id,
-                    fecha=get_hoy_santiago(),
+                    fecha=get_local_date(),
                     tipo=TipoTransaccion.GASTO,
                     monto=Decimal(monto_str),
                     concepto=concepto_str.capitalize(),
@@ -58,16 +58,18 @@ def try_fast_path(text: str, message_id: str) -> ParseResult | None:
     return None
 
 def get_system_prompt(categorias_disponibles: list[str]) -> str:
-    hoy = get_hoy_santiago().isoformat()
+    hoy = get_local_date().isoformat()
+    bot_context = os.getenv("BOT_CONTEXT", "Chile, usando pesos chilenos sin decimales.")
     return f"""
 Eres un asistente financiero experto. Tu tarea es extraer información estructurada a partir de mensajes de texto coloquiales.
 Debes devolver un JSON estricto que cumpla con el esquema requerido.
 
 HOY ES: {hoy}. Usa esta fecha de referencia estricta para cálculos de tiempo como "ayer", "el martes pasado", "hace 3 días".
+CONTEXTO DEL USUARIO Y MONEDA: {bot_context} (Ten muy en cuenta este contexto geográfico para entender modismos, nombres de tiendas y magnitudes).
 
 Reglas de negocio:
 1. 'es_transaccion': Evalúa si el texto relata un gasto o ingreso REAL Y PROPIO del usuario. Si es una historia sobre otra persona (ej. "mi amigo gastó...", "él me contó..."), una conversación general, o spam, marca esto como false.
-2. 'monto': Debe ser un número entero o decimal positivo. Si el usuario menciona "lucas" o "k" (en Chile), asume miles. Si dice "gambas", son cientos. Si dice "quinas" está aludiendo a la moneda de quinientos (ej. 3 quinas = 1500). Si es un reembolso, el monto sigue siendo positivo pero el tipo cambia.
+2. 'monto': Debe ser un número entero o decimal positivo. Infiere la magnitud correcta según el contexto. Si es un reembolso, el monto sigue siendo positivo pero el tipo cambia.
 3. 'tipo': Debe ser estrictamente "Ingreso" o "Gasto". (Si fue un Egreso, es gasto. Si dice "me pagaron", "sueldo", "reembolso", "devolución", es Ingreso).
 4. 'concepto': Breve resumen de la transacción en 1 o 2 palabras (ej. "Uber", "Cerveza", "Sueldo", "Deuda Pedro").
 5. 'categoria': DEBE ser EXACTAMENTE una de las siguientes opciones textuales: {categorias_disponibles}.
@@ -139,7 +141,7 @@ def parse_transaction_message(text: str, message_id: str, categorias_disponibles
         opciones_categoria = extracted_data.pop("opciones_categoria", [])
         
         fecha_str = extracted_data.pop("fecha", None)
-        fecha_tx = get_hoy_santiago()
+        fecha_tx = get_local_date()
         if fecha_str:
             if isinstance(fecha_str, str):
                 try:
@@ -213,7 +215,7 @@ class AnalisisQuery(BaseModel):
     concepto_objetivo: str | None = None
 
 def filtrar_transacciones(transacciones: list[dict], filtro_tiempo: FiltroTiempo) -> list[dict]:
-    hoy = get_hoy_santiago()
+    hoy = get_local_date()
     filtradas = []
     
     for tx in transacciones:
@@ -258,7 +260,7 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
         raise ValueError("La variable GEMINI_API_KEY no está configurada.")
         
     client = genai.Client(api_key=api_key)
-    hoy_date = get_hoy_santiago()
+    hoy_date = get_local_date()
     hoy = hoy_date.isoformat()
     
     prompt_router = f"""
@@ -297,7 +299,7 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
         if intent == IntentType.GASTO_TOTAL:
             total = sum(Decimal(str(tx.get('monto', 0)).replace(',','').replace('$','')) for tx in gastos)
             cat_str = f" en {categoria_obj}" if categoria_obj else ""
-            respuesta_final = f"📊 Tu gasto total{cat_str} ({filtro_tiempo.value.replace('_', ' ')}) es de **${total:,.0f}**."
+            respuesta_final = f"📊 Tu gasto total{cat_str} ({filtro_tiempo.value.replace('_', ' ')}) es de **{format_currency(total)}**."
             
         elif intent == IntentType.GASTO_PROMEDIO:
             total = sum(Decimal(str(tx.get('monto', 0)).replace(',','').replace('$','')) for tx in gastos)
@@ -326,7 +328,7 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
                 
             promedio = total / Decimal(dias)
             cat_str = f" en {categoria_obj}" if categoria_obj else ""
-            respuesta_final = f"📉 **Promedio Diario{cat_str} ({filtro_tiempo.value.replace('_', ' ')}):**\nHas gastado una media de **${promedio:,.0f} al día**."
+            respuesta_final = f"📉 **Promedio Diario{cat_str} ({filtro_tiempo.value.replace('_', ' ')}):**\nHas gastado una media de **{format_currency(promedio)} al día**."
             
         elif intent == IntentType.DESGLOSE_METODO:
             desglose = defaultdict(Decimal)
@@ -337,9 +339,9 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
             respuesta_final = f"💳 **Desglose por Método de Pago ({filtro_tiempo.value.replace('_', ' ')}):**\n"
             total = Decimal(0)
             for m, monto in sorted(desglose.items(), key=lambda x: x[1], reverse=True):
-                respuesta_final += f"• {m}: ${monto:,.0f}\n"
+                respuesta_final += f"• {m}: {format_currency(monto)}\n"
                 total += monto
-            respuesta_final += f"\n**Total:** ${total:,.0f}"
+            respuesta_final += f"\n**Total:** {format_currency(total)}"
             
         elif intent == IntentType.DESGLOSE_CATEGORIA:
             desglose = defaultdict(Decimal)
@@ -353,9 +355,9 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
             respuesta_final = f"📁 **Desglose por Categoría ({filtro_tiempo.value.replace('_', ' ')}):**\n"
             total = Decimal(0)
             for c, monto in sorted(desglose.items(), key=lambda x: x[1], reverse=True):
-                respuesta_final += f"• {c}: ${monto:,.0f}\n"
+                respuesta_final += f"• {c}: {format_currency(monto)}\n"
                 total += monto
-            respuesta_final += f"\n**Total analizado:** ${total:,.0f}"
+            respuesta_final += f"\n**Total analizado:** {format_currency(total)}"
             
             # OPINIÓN DE LA IA:
             if total > 0:
@@ -383,17 +385,19 @@ def generar_comentario_ironico(monto: Decimal, concepto: str, categoria: str) ->
         
     client = genai.Client(api_key=api_key)
     
+    bot_context = os.getenv("BOT_CONTEXT", "Chile, usando pesos chilenos sin decimales.")
     prompt = (
-        f"Acabo de registrar este gasto: ${monto:,.0f} "
+        f"Acabo de registrar este gasto: {format_currency(monto)} "
         f"en '{concepto}' (Categoría: {categoria}). "
         f"Genera un comentario de 1 sola frase muy breve, irónico y un poco sarcástico sobre este gasto para responderle al usuario. "
-        f"Hazlo amigable pero con ese toque de humor financiero. No uses formato markdown complejo."
+        f"Hazlo amigable pero con ese toque de humor financiero, que sea realmente chistoso. No uses formato markdown complejo."
+        f"Contexto del usuario para entender tiendas y moneda: {bot_context}"
     )
     
     try:
         chat = client.chats.create(
             model='gemini-flash-lite-latest',
-            config=types.GenerateContentConfig(temperature=0.85)
+            config=types.GenerateContentConfig(temperature=0.8)
         )
         response = chat.send_message(prompt)
         return response.text.strip()
@@ -450,7 +454,7 @@ def parse_multi_transaction_message(text: str, base_message_id: str, categorias_
             _ = tx_data.pop("opciones_categoria", [])
             
             fecha_str = tx_data.pop("fecha", None)
-            fecha_tx = get_hoy_santiago()
+            fecha_tx = get_local_date()
             if fecha_str:
                 if isinstance(fecha_str, str):
                     try:
