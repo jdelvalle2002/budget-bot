@@ -139,7 +139,6 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
                 # INYECCIÓN DE PRESUPUESTO (Solo para gastos nuevos y estrictos)
                 estado_presupuesto = None
                 if str(session.pending_transaction.tipo.value).lower() == "gasto":
-                    from src.models import format_currency
                     is_strict = categoria_elegida not in ["Ahorro", "Inversiones", "Salud", "Cuentas Básicas", "Educación", "Remuneraciones", "Otros Ingresos"]
                     
                     if is_strict and sheets_client:
