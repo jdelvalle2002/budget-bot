@@ -421,15 +421,15 @@ def generar_comentario_ironico(monto: Decimal, concepto: str, categoria: str) ->
         f"Acabo de registrar este gasto: {format_currency(monto)} "
         f"en '{concepto}' (Categoría: {categoria}).\n"
         f"Contexto del usuario (CRÍTICO para entender si el monto es grande o pequeño): {bot_context}\n"
-        f"Genera un comentario de 1 sola frase muy breve, irónico y un poco sarcástico sobre este gasto para responderle al usuario.\n"
-        f"Considera fuertemente el monto en relación a la moneda local; si es un monto minúsculo para esa moneda el sarcasmo debe ser sobre lo tacaño que es o lo poco que gastó, no exagerar como si fuera mucho dinero.\n"
+        f"Genera un comentario de 1 o 2 frases, breve, humorístico, quizás irónico o un poco sarcástico sobre este gasto para responderle al usuario.\n"
+        f"Considera el monto en relación a la moneda local; no es lo mismo gastar $10000 pesos en pan que gastar $100 dólares en sushi.\n"
         f"Hazlo amigable, que sea realmente chistoso y pertinente a la magnitud real del gasto. No uses formato markdown complejo."
     )
     
     try:
         chat = client.chats.create(
             model='gemini-flash-lite-latest',
-            config=types.GenerateContentConfig(temperature=0.8)
+            config=types.GenerateContentConfig(temperature=0.85)
         )
         response = chat.send_message(prompt)
         return response.text.strip()
