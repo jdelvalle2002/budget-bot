@@ -388,10 +388,11 @@ def generar_comentario_ironico(monto: Decimal, concepto: str, categoria: str) ->
     bot_context = os.getenv("BOT_CONTEXT", "Chile, usando pesos chilenos sin decimales.")
     prompt = (
         f"Acabo de registrar este gasto: {format_currency(monto)} "
-        f"en '{concepto}' (Categoría: {categoria}). "
-        f"Genera un comentario de 1 sola frase muy breve, irónico y un poco sarcástico sobre este gasto para responderle al usuario. "
-        f"Hazlo amigable pero con ese toque de humor financiero, que sea realmente chistoso. No uses formato markdown complejo."
-        f"Contexto del usuario para entender tiendas y moneda: {bot_context}"
+        f"en '{concepto}' (Categoría: {categoria}).\n"
+        f"Contexto del usuario (CRÍTICO para entender si el monto es grande o pequeño): {bot_context}\n"
+        f"Genera un comentario de 1 sola frase muy breve, irónico y un poco sarcástico sobre este gasto para responderle al usuario.\n"
+        f"Considera fuertemente el monto en relación a la moneda local; si es un monto minúsculo para esa moneda el sarcasmo debe ser sobre lo tacaño que es o lo poco que gastó, no exagerar como si fuera mucho dinero.\n"
+        f"Hazlo amigable, que sea realmente chistoso y pertinente a la magnitud real del gasto. No uses formato markdown complejo."
     )
     
     try:

@@ -233,6 +233,7 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             "⏪ `/resumen anterior` : Ver tus gastos del mes pasado.\n"
             "🕰️ `/ultimas` : Ver tus últimos 5 registros (te permite Editarlos o Borrarlos).\n"
             "📦 `/multi [gastos]` : Registra varios gastos de una sola vez separados por comas (ej: _/multi 15k uber, 50k super_).\n"
+            "🔎 `/buscar [texto]` : Busca registros por concepto o comentario (ej: _/buscar uber_).\n"
             "💡 `? [pregunta]` : Hazme cualquier consulta analítica sobre tus datos (ej: _? en qué gasté más este mes_).\n"
             "❓ `/ayuda` : Ver este mensaje."
         )
@@ -308,14 +309,26 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             
         return
 
-    if texto_limpio in ["/ultimas", "últimas", "ultimas"]:
+    if texto_limpio.startswith("/ultimas") or texto_limpio.startswith("últimas") or texto_limpio.startswith("ultimas"):
+        ordenar_por_fecha = "fecha" in texto_limpio
         await enviar_mensaje_telegram(chat_id, "⏳ Obteniendo transacciones recientes...")
-        ultimas = sheets_client.get_last_transactions(limit=5)
+        ultimas = sheets_client.get_last_transactions(limit=50 if ordenar_por_fecha else 5)
         if not ultimas:
             await enviar_mensaje_telegram(chat_id, "ℹ️ No hay transacciones recientes registradas.")
             return
             
-        await enviar_mensaje_telegram(chat_id, "🕰️ *Tus últimos 5 movimientos:*")
+        if ordenar_por_fecha:
+            try:
+                from datetime import datetime
+                # Ordenar por fecha descendente, y luego por ID descendente
+                ultimas.sort(key=lambda x: (datetime.strptime(x['fecha'], "%d-%m-%Y"), int(x['id'])), reverse=True)
+            except Exception as e:
+                logger.error(f"Error ordenando por fecha: {e}")
+            # Truncar a 5
+            ultimas = ultimas[:5]
+            
+        titulo = "🕰️ *Tus 5 movimientos más recientes (por fecha):*" if ordenar_por_fecha else "🕰️ *Tus últimos 5 movimientos registrados:*"
+        await enviar_mensaje_telegram(chat_id, titulo)
         
         for tx in ultimas:
             # Emoji según tipo
