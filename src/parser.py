@@ -266,6 +266,8 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
     prompt_router = f"""
     Hoy es {hoy}. 
     Clasifica la intención analítica del usuario sobre sus finanzas.
+    Si el usuario pregunta por un concepto o tienda específica (ej: "uber", "helado", "sushi", "supermercado"), 
+    clasifícalo como 'busqueda_especifica' y extrae ese término en 'concepto_objetivo'.
     """
     
     try:
@@ -283,6 +285,7 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
         intent = query_data.get("intent")
         filtro_tiempo = FiltroTiempo(query_data.get("filtro_tiempo", "este_mes"))
         categoria_obj = query_data.get("categoria_objetivo")
+        concepto_objetivo = query_data.get("concepto_objetivo")
         
         txs_filtradas = filtrar_transacciones(transacciones, filtro_tiempo)
         
@@ -366,8 +369,36 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
                 opinion = chat_op.send_message(prompt_opinion)
                 respuesta_final += f"\n\n🤖 _Comentario: {opinion.text.strip()}_"
                 
-        else: # Busqueda Especifica o Fallback
-            respuesta_final = "🔎 Entendí tu consulta, pero por ahora soy mejor haciendo desgloses matemáticos (Categoría, Método o Total). ¡Prueba preguntarme por sumas específicas!"
+        elif intent == IntentType.BUSQUEDA_ESPECIFICA and (concepto_objetivo or categoria_obj):
+            termino = concepto_objetivo if concepto_objetivo else categoria_obj
+            termino_norm = quitar_acentos(termino.lower())
+            
+            coincidencias = [
+                tx for tx in gastos 
+                if termino_norm in quitar_acentos(str(tx.get('concepto', '')).lower())
+                or termino_norm in quitar_acentos(str(tx.get('categoria', '')).lower())
+                or termino_norm in quitar_acentos(str(tx.get('comentarios', '')).lower())
+            ]
+            
+            veces = len(coincidencias)
+            total = sum(Decimal(str(tx.get('monto', 0)).replace(',','').replace('$','')) for tx in coincidencias)
+            
+            if veces == 0:
+                respuesta_final = f"🔎 No encontré gastos relacionados a '{termino}' ({filtro_tiempo.value.replace('_', ' ')})."
+            else:
+                respuesta_final = f"🔎 **Búsqueda: '{termino.capitalize()}' ({filtro_tiempo.value.replace('_', ' ')})**\n"
+                respuesta_final += f"Has registrado gastos en esto **{veces} veces**, sumando un total de **{format_currency(total)}**."
+                
+                ultimos_3 = sorted(coincidencias, key=lambda x: str(x.get('fecha', '')), reverse=True)[:3]
+                if ultimos_3:
+                    respuesta_final += "\n\nÚltimos registros:\n"
+                    for tx in ultimos_3:
+                        fecha = str(tx.get('fecha', '')).split('T')[0]
+                        monto_tx = Decimal(str(tx.get('monto', 0)).replace(',','').replace('$',''))
+                        respuesta_final += f"• {fecha}: {format_currency(monto_tx)} ({tx.get('concepto', '')})\n"
+                        
+        else: # Fallback
+            respuesta_final = "🔎 Entendí tu consulta, pero por ahora soy mejor haciendo desgloses matemáticos (Categoría, Método o Total). ¡Prueba preguntarme por sumas específicas como 'cuánto he gastado en uber'!"
 
         return respuesta_final
         
