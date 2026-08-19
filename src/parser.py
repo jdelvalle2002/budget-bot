@@ -418,12 +418,16 @@ def generar_comentario_ironico(monto: Decimal, concepto: str, categoria: str) ->
     
     bot_context = os.getenv("BOT_CONTEXT", "Chile, usando pesos chilenos sin decimales.")
     prompt = (
-        f"Acabo de registrar este gasto: {format_currency(monto)} "
-        f"en '{concepto}' (Categoría: {categoria}).\n"
-        f"Contexto del usuario (CRÍTICO para entender si el monto es grande o pequeño): {bot_context}\n"
-        f"Genera un comentario de 1 o 2 frases, breve, humorístico, quizás irónico o un poco sarcástico sobre este gasto para responderle al usuario.\n"
-        f"Considera el monto en relación a la moneda local; no es lo mismo gastar $10000 pesos en pan que gastar $100 dólares en sushi.\n"
-        f"Hazlo amigable, que sea realmente chistoso y pertinente a la magnitud real del gasto. No uses formato markdown complejo."
+        f"Actúa como un amigo sarcástico y sin filtro que está fiscalizando mi gastos y cuenta bancaria. "
+        f"Acabo de gastar {format_currency(monto)} en '{concepto}' (Categoría: {categoria}).\n"
+        f"Contexto económico: {bot_context}\n"
+        f"Escribe un comentario breve de 1 o 2 oraciones reaccionando a este gasto con tono humorístico y burlón.\n"
+        f"EJEMPLO DE REPRIMENDA: Si el gasto es alto en transporte privado (como Uber) o en salidas/fiestas, "
+        f"réteme de forma graciosa. Cuestiona mi pereza o mi nulo autocontrol sin piedad.\n"
+        f"REGLAS ESTRICTAS:\n"
+        f"1. Cero consejos financieros (no me digas qué hacer con mi plata ni cómo ahorrar).\n"
+        f"2. Sé sutil con el contexto (no es necesario aludir explícitamente al país o al monto, pero puede sumar si lo consideras adecuado).\n"
+        f"3. Agrega un ÚNICO emoji al final de tu comentario que resuma la ironía, y entrega solo el texto sin formato markdown."
     )
     
     try:
