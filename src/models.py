@@ -47,8 +47,14 @@ class Transaction(BaseModel):
         if v > hoy:
             raise ValueError('No puedes registrar gastos o ingresos en el futuro.')
         diferencia = (hoy - v).days
-        if diferencia > 45:
-            raise ValueError(f'El gasto es demasiado antiguo ({diferencia} días). El límite es de 45 días.')
+        
+        try:
+            max_past_days = int(os.getenv("MAX_PAST_DAYS", "60"))
+        except ValueError:
+            max_past_days = 60
+            
+        if max_past_days > 0 and diferencia > max_past_days:
+            raise ValueError(f'El gasto es demasiado antiguo ({diferencia} días). El límite es de {max_past_days} días.')
         return v
 
     @field_validator('monto')

@@ -94,8 +94,7 @@ class GoogleSheetsClient:
         False si hubo un error.
         """
         if not sheet_name:
-            from src.models import get_local_date
-            sheet_name = str(get_local_date().year)
+            sheet_name = str(transaction.fecha.year)
             
         # Chequear Idempotencia
         range_name_ids = f"{sheet_name}!A:A"
@@ -127,8 +126,7 @@ class GoogleSheetsClient:
     def update_transaction(self, transaction: Transaction, sheet_name: str = None) -> bool:
         """Sobrescribe una transacción existente."""
         if not sheet_name:
-            from src.models import get_local_date
-            sheet_name = str(get_local_date().year)
+            sheet_name = str(transaction.fecha.year)
             
         row_index = self._find_row_index(transaction.id_transaccion, sheet_name)
         if row_index == -1:
@@ -152,12 +150,11 @@ class GoogleSheetsClient:
 
     def append_multiple_transactions(self, transactions: list, sheet_name: str = None) -> bool:
         """Añade múltiples transacciones de una sola vez."""
-        if not sheet_name:
-            from src.models import get_local_date
-            sheet_name = str(get_local_date().year)
-            
         if not transactions:
             return True
+            
+        if not sheet_name:
+            sheet_name = str(transactions[0].fecha.year)
         range_name = f"{sheet_name}!A:H"
         try:
             values = [tx.to_row() for tx in transactions]
