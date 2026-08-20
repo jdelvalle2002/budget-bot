@@ -274,8 +274,11 @@ class GoogleSheetsClient:
             logger.error(f"Error buscando transacciones: {e}")
             return []
 
-    def get_month_summary(self, month_offset: int = 0, sheet_name: str = None) -> tuple[dict, int, int]:
-        """Agrupa los gastos del mes indicado por categoría, retornando total y conteo."""
+    def get_month_summary(self, month_offset: int = 0, sheet_name: str = None, max_day: int = None) -> tuple[dict, int, int]:
+        """
+        Obtiene el resumen de gastos/ingresos para un mes.
+        Si max_day está definido, solo suma hasta ese día inclusive.
+        """
         from src.models import get_local_date
         hoy = get_local_date()
         
@@ -315,6 +318,14 @@ class GoogleSheetsClient:
                     categoria = row[5]
                     
                     if fecha_str.startswith(mes_objetivo):
+                        if max_day is not None:
+                            try:
+                                day = int(fecha_str.split('T')[0].split('-')[2])
+                                if day > max_day:
+                                    continue
+                            except Exception:
+                                pass
+                                
                         try:
                             monto = float(monto_str)
                             if categoria not in resumen:
@@ -342,6 +353,54 @@ class GoogleSheetsClient:
         except Exception as e:
             logger.error(f"Error generando resumen: {e}")
             return {}, target_month, target_year
+    def get_category_monthly_average(self, categoria: str, sheet_name: str = None) -> float:
+        """Calcula el gasto/ingreso neto mensual promedio histórico para una categoría específica."""
+        from src.models import get_local_date
+        if not sheet_name:
+            sheet_name = str(get_local_date().year)
+            
+        range_name = f"{sheet_name}!A:H"
+        try:
+            result = self.sheet.values().get(
+                spreadsheetId=self.spreadsheet_id,
+                range=range_name
+            ).execute()
+            values = result.get('values', [])
+            
+            meses_totales = {}
+            categorias_ingreso = ["Remuneraciones", "Otros Ingresos", "Inversiones"]
+            is_ingreso_nativo = categoria in categorias_ingreso
+            
+            for row in values[1:]:
+                if len(row) >= 6:
+                    fecha_str = row[1]
+                    tipo = row[2]
+                    monto_str = str(row[3]).replace(',', '')
+                    cat_row = row[5]
+                    
+                    if cat_row.lower() == categoria.lower():
+                        mes = fecha_str[:7] # YYYY-MM
+                        if mes not in meses_totales:
+                            meses_totales[mes] = 0.0
+                            
+                        try:
+                            monto = float(monto_str)
+                            if tipo.lower() == "gasto":
+                                meses_totales[mes] += (-monto if is_ingreso_nativo else monto)
+                            elif tipo.lower() == "ingreso":
+                                meses_totales[mes] += (monto if is_ingreso_nativo else -monto)
+                        except ValueError:
+                            continue
+            
+            if not meses_totales:
+                return 0.0
+                
+            total = sum(meses_totales.values())
+            return total / len(meses_totales)
+        except Exception as e:
+            logger.error(f"Error calculando promedio histórico de {categoria}: {e}")
+            return 0.0
+            
     def delete_transaction(self, id_transaccion: str, sheet_name: str = None) -> bool:
         """Borra la fila de una transacción de forma definitiva."""
         if not sheet_name:

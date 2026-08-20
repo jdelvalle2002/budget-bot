@@ -137,29 +137,35 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
                 success = sheets_client.append_transaction(session.pending_transaction)
                 
                 # INYECCIÓN DE PRESUPUESTO (Solo para gastos nuevos y estrictos)
+                es_anomalo = False
                 estado_presupuesto = None
-                if str(session.pending_transaction.tipo.value).lower() == "gasto":
+                if str(session.pending_transaction.tipo.value).lower() == "gasto" and sheets_client:
+                    resumen_mes, _, _ = sheets_client.get_month_summary(0)
+                    acumulado = resumen_mes.get(categoria_elegida, {}).get("total", 0)
+                    
+                    promedio = sheets_client.get_category_monthly_average(categoria_elegida)
+                    if promedio > 0 and acumulado > promedio * 1.5:
+                        es_anomalo = True
+                        
                     is_strict = categoria_elegida not in ["Ahorro", "Inversiones", "Salud", "Cuentas Básicas", "Educación", "Remuneraciones", "Otros Ingresos"]
                     
-                    if is_strict and sheets_client:
+                    if is_strict:
                         cat_config = sheets_client.load_categories_from_config().get(categoria_elegida, {})
                         presupuesto = cat_config.get("presupuesto") if isinstance(cat_config, dict) else None
                         
                         if presupuesto and presupuesto > 0:
-                            resumen, _, _ = sheets_client.get_month_summary(0)
-                            gasto_actual = resumen.get(categoria_elegida, {}).get("total", 0)
-                            
-                            if gasto_actual > presupuesto:
-                                estado_presupuesto = f"Lleva gastado {format_currency(gasto_actual)} en el mes, y su límite es {format_currency(presupuesto)}. ¡Se excedió!"
-                            elif gasto_actual >= presupuesto * 0.8:
-                                estado_presupuesto = f"Lleva gastado {format_currency(gasto_actual)} en el mes, y su límite es {format_currency(presupuesto)}. ¡Está peligrosamente cerca!"
+                            if acumulado > presupuesto:
+                                estado_presupuesto = f"Lleva gastado {format_currency(acumulado)} en el mes, y su límite es {format_currency(presupuesto)}. ¡Se excedió!"
+                            elif acumulado >= presupuesto * 0.8:
+                                estado_presupuesto = f"Lleva gastado {format_currency(acumulado)} en el mes, y su límite es {format_currency(presupuesto)}. ¡Está peligrosamente cerca!"
                 
                 from src.parser import generar_comentario_ironico
                 chiste = generar_comentario_ironico(
                     session.pending_transaction.monto, 
                     session.pending_transaction.concepto, 
                     session.pending_transaction.categoria,
-                    estado_presupuesto=estado_presupuesto
+                    estado_presupuesto=estado_presupuesto,
+                    es_anomalo=es_anomalo
                 )
                 
                 msg_exito = f"✅ Registrado exitosamente en la categoría *{categoria_elegida}*."
@@ -247,13 +253,13 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         return
 
     # --- FLUJO 3: MENSAJE NUEVO ---
-    # Comandos de Sistema
     if texto_limpio in ["/ayuda", "ayuda", "help"]:
         msg = (
             "🤖 *Comandos Disponibles:*\n\n"
             "Solo escríbeme lo que gastaste (ej: _'15000 en uber'_).\n\n"
             "O usa estos comandos avanzados:\n"
             "📊 `/resumen` : Ver tus gastos del mes.\n"
+            "📈 `/tendencias` : Compara tus gastos de este mes (hasta hoy) con el mes pasado.\n"
             "⏪ `/resumen anterior` : Ver tus gastos del mes pasado.\n"
             "🕰️ `/ultimas` : Ver tus últimos 5 registros (te permite Editarlos o Borrarlos).\n"
             "📦 `/multi [gastos]` : Registra varios gastos de una sola vez separados por comas (ej: _/multi 15k uber, 50k super_).\n"
@@ -262,6 +268,57 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             "❓ `/ayuda` : Ver este mensaje.\n\n"
             "💡 *Tip:* Puedes entrar a tu planilla de Sheets y agregar montos en la nueva columna 'Presupuesto' de la pestaña 'Config' para que el bot controle tus límites mensuales."
         )
+        await enviar_mensaje_telegram(chat_id, msg)
+        return
+        
+    if texto_limpio.startswith("/tendencias") or texto_limpio.startswith("tendencias"):
+        await enviar_mensaje_telegram(chat_id, "⏳ Analizando tus tendencias de gasto...")
+        from src.models import get_local_date
+        hoy = get_local_date()
+        day = hoy.day
+        
+        # Obtenemos los resúmenes hasta el día actual
+        resumen_actual, m_act, y_act = sheets_client.get_month_summary(0, max_day=day)
+        resumen_pasado, m_pas, y_pas = sheets_client.get_month_summary(-1, max_day=day)
+        
+        categorias_ingreso_nativas = ["Remuneraciones", "Otros Ingresos", "Inversiones"]
+        
+        gastos_actual = sum(datos['total'] for cat, datos in resumen_actual.items() if cat not in categorias_ingreso_nativas)
+        gastos_pasado = sum(datos['total'] for cat, datos in resumen_pasado.items() if cat not in categorias_ingreso_nativas)
+        
+        if gastos_pasado == 0:
+            await enviar_mensaje_telegram(chat_id, "ℹ️ No tienes suficientes gastos registrados el mes pasado para hacer una comparación.")
+            return
+            
+        variacion_total = ((gastos_actual - gastos_pasado) / gastos_pasado) * 100
+        emoji_total = "🔴 Subió" if variacion_total > 0 else "🟢 Bajó"
+        
+        msg = f"📈 *Tendencias de Gasto (hasta el día {day})*\n\n"
+        msg += f"🗓️ {m_act:02d}/{y_act}: {format_currency(gastos_actual)}\n"
+        msg += f"🗓️ {m_pas:02d}/{y_pas}: {format_currency(gastos_pasado)}\n"
+        msg += f"📊 Variación: {emoji_total} un {abs(variacion_total):.1f}%\n\n"
+        
+        # Categorías que más subieron
+        variaciones = []
+        for cat, datos in resumen_actual.items():
+            if cat in categorias_ingreso_nativas:
+                continue
+                
+            monto_actual = datos['total']
+            monto_pasado = resumen_pasado.get(cat, {}).get("total", 0)
+            diff = monto_actual - monto_pasado
+            if diff > 0:
+                variaciones.append((cat, diff, monto_actual, monto_pasado))
+                
+        if variaciones:
+            msg += "*🔥 Categorías que más aumentaron:*\n"
+            variaciones.sort(key=lambda x: x[1], reverse=True)
+            for cat, diff, m_act_cat, m_pas_cat in variaciones[:3]:
+                pct = (diff / m_pas_cat * 100) if m_pas_cat > 0 else 100
+                msg += f"• *{cat}:* +{format_currency(diff)} (⬆️ {pct:.0f}%)\n"
+        else:
+            msg += "🏆 ¡Excelente! Ninguna categoría ha subido respecto al mes pasado.\n"
+            
         await enviar_mensaje_telegram(chat_id, msg)
         return
 
@@ -283,8 +340,9 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         matplotlib.use('Agg')
         import matplotlib.pyplot as plt
         
-        msg_lineas = [f"📊 *Resumen de Gastos - {t_month:02d}/{t_year}*\n"]
-        total = 0
+        msg_lineas = [f"📊 *Resumen Mensual - {t_month:02d}/{t_year}*\n"]
+        total_gastos = 0
+        total_ingresos = 0
         
         categorias = []
         montos = []
@@ -294,35 +352,54 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         default_colors = plt.cm.tab20.colors
         colores_usados = []
         
+        categorias_ingreso_nativas = ["Remuneraciones", "Otros Ingresos", "Inversiones"]
+        
         for cat, datos in sorted(resumen.items(), key=lambda x: x[1]["total"], reverse=True):
             cat_config = CATEGORY_CONFIG.get(cat, {})
             presupuesto = cat_config.get("presupuesto") if isinstance(cat_config, dict) else None
             
-            if presupuesto and presupuesto > 0:
-                pct = (datos['total'] / presupuesto) * 100
-                is_strict = cat not in ["Ahorro", "Inversiones", "Salud", "Cuentas Básicas", "Educación", "Remuneraciones", "Otros Ingresos", "Hogar"]
-                
-                if pct > 100:
-                    alert = "🔴 EXCEDIDO" if is_strict else "🔵 Completado"
-                    msg_lineas.append(f"- *{cat}:* {format_currency(datos['total'])} / {format_currency(presupuesto)} ({pct:.0f}% {alert})")
-                else:
-                    msg_lineas.append(f"- *{cat}:* {format_currency(datos['total'])} / {format_currency(presupuesto)} ({pct:.0f}% 🟢)")
+            is_ingreso = cat in categorias_ingreso_nativas
+            
+            if is_ingreso:
+                total_ingresos += datos['total']
+                msg_lineas.append(f"🟢 *{cat}:* {format_currency(datos['total'])} ({datos['count']} txs)")
             else:
-                msg_lineas.append(f"- *{cat}:* {format_currency(datos['total'])} ({datos['count']} txs)")
+                total_gastos += datos['total']
+                categorias.append(cat)
+                montos.append(datos['total'])
                 
-            total += datos['total']
-            categorias.append(cat)
-            montos.append(datos['total'])
+                # Asignar color fijo o fallback
+                color_hex = cat_config.get("color") if isinstance(cat_config, dict) else None
+                color = color_hex if color_hex else default_colors[len(colores_usados) % len(default_colors)]
+                colores_usados.append(color)
+                
+                if presupuesto and presupuesto > 0:
+                    pct = (datos['total'] / presupuesto) * 100
+                    is_strict = cat not in ["Ahorro", "Inversiones", "Salud", "Cuentas Básicas", "Educación", "Remuneraciones", "Otros Ingresos", "Hogar"]
+                    
+                    if pct > 100:
+                        alert = "🔴 EXCEDIDO" if is_strict else "🔵 Completado"
+                        msg_lineas.append(f"- *{cat}:* {format_currency(datos['total'])} / {format_currency(presupuesto)} ({pct:.0f}% {alert})")
+                    else:
+                        msg_lineas.append(f"- *{cat}:* {format_currency(datos['total'])} / {format_currency(presupuesto)} ({pct:.0f}% 🟢)")
+                else:
+                    msg_lineas.append(f"- *{cat}:* {format_currency(datos['total'])} ({datos['count']} txs)")
             
-            # Asignar color fijo o fallback
-            color_hex = cat_config.get("color") if isinstance(cat_config, dict) else None
-            color = color_hex if color_hex else default_colors[len(colores_usados) % len(default_colors)]
-            colores_usados.append(color)
-            
-        msg_lineas.append(f"\n💰 *Total Gastado:* {format_currency(total)}")
+        msg_lineas.append(f"\n💰 *Total Ingresos:* {format_currency(total_ingresos)}")
+        msg_lineas.append(f"💸 *Total Gastos:* {format_currency(total_gastos)}")
+        balance = total_ingresos - total_gastos
+        if total_ingresos > 0:
+            ahorro_pct = (balance / total_ingresos) * 100
+            msg_lineas.append(f"⚖️ *Balance Neto:* {format_currency(balance)} ({ahorro_pct:.1f}% ahorrado)")
+        else:
+            msg_lineas.append(f"⚖️ *Balance Neto:* {format_currency(balance)}")
         
-        # Generar gráfico
+        # Generar gráfico solo si hay gastos
         try:
+            if not montos:
+                await enviar_mensaje_telegram(chat_id, "\n".join(msg_lineas))
+                return
+                
             from src.models import get_local_date
             hora_gen = get_local_date().strftime("%d/%m/%Y")
             
@@ -528,8 +605,36 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
                     f"- *Metodo:* {parse_result.transaction.metodo.value}\n"
                 )
                 
+                es_anomalo = False
+                estado_presupuesto = None
+                
+                if str(parse_result.transaction.tipo.value).lower() == "gasto" and sheets_client:
+                    resumen_mes, _, _ = sheets_client.get_month_summary(0)
+                    acumulado = resumen_mes.get(parse_result.transaction.categoria, {}).get("total", 0)
+                    
+                    promedio = sheets_client.get_category_monthly_average(parse_result.transaction.categoria)
+                    if promedio > 0 and acumulado > promedio * 1.5:
+                        es_anomalo = True
+                        
+                    is_strict = parse_result.transaction.categoria not in ["Ahorro", "Inversiones", "Salud", "Cuentas Básicas", "Educación", "Remuneraciones", "Otros Ingresos"]
+                    if is_strict:
+                        cat_config = sheets_client.load_categories_from_config().get(parse_result.transaction.categoria, {})
+                        presupuesto = cat_config.get("presupuesto") if isinstance(cat_config, dict) else None
+                        
+                        if presupuesto and presupuesto > 0:
+                            if acumulado > presupuesto:
+                                estado_presupuesto = f"Lleva gastado {format_currency(acumulado)} en el mes, y su límite es {format_currency(presupuesto)}. ¡Se excedió!"
+                            elif acumulado >= presupuesto * 0.8:
+                                estado_presupuesto = f"Lleva gastado {format_currency(acumulado)} en el mes, y su límite es {format_currency(presupuesto)}. ¡Está peligrosamente cerca!"
+                
                 from src.parser import generar_comentario_ironico
-                chiste = generar_comentario_ironico(parse_result.transaction.monto, parse_result.transaction.concepto, parse_result.transaction.categoria)
+                chiste = generar_comentario_ironico(
+                    parse_result.transaction.monto, 
+                    parse_result.transaction.concepto, 
+                    parse_result.transaction.categoria,
+                    estado_presupuesto=estado_presupuesto,
+                    es_anomalo=es_anomalo
+                )
                 if chiste:
                     respuesta += f"\n\n🤖 _{chiste}_"
                 

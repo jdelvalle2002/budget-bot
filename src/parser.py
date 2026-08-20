@@ -422,7 +422,7 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
         logger.error(f"Error en consulta natural determinista: {e}")
         raise ValueError("Lo siento, mis circuitos analíticos fallaron al clasificar tu intención. Intenta nuevamente.")
 
-def generar_comentario_ironico(monto: Decimal, concepto: str, categoria: str, estado_presupuesto: str | None = None) -> str:
+def generar_comentario_ironico(monto: Decimal, concepto: str, categoria: str, estado_presupuesto: str | None = None, es_anomalo: bool = False) -> str:
     """
     Genera un comentario breve e irónico sobre una transacción recién registrada.
     """
@@ -433,15 +433,18 @@ def generar_comentario_ironico(monto: Decimal, concepto: str, categoria: str, es
     client = genai.Client(api_key=api_key)
     
     bot_context = os.getenv("BOT_CONTEXT", "Chile, usando pesos chilenos sin decimales.")
-    
     bot_tone = os.getenv("BOT_TONE", "sarcástico, burlón y sin filtro pero amigable")
     
     presupuesto_str = f"\nOJO, DATO VITAL: {estado_presupuesto} Ten en cuenta esto en tu comentario si está cerca de pasarse o ya se pasó de su límite mensual.\n" if estado_presupuesto else ""
     
+    anomalia_str = ""
+    if es_anomalo:
+        anomalia_str = "\n🚨 ¡ALERTA ANOMALÍA! Con este último registro, el usuario acaba de gastar mucho más de lo que gasta normalmente en un mes en esta categoría (superó su promedio histórico + 50%). Céntrate en esto: dale una ADVERTENCIA SERIA. No uses humor burlón para esta alerta, sé más constructivo pero mantén tu rol de fiscalizador.\n"
+    
     prompt = (
         f"Actúa como un amigo {bot_tone} que está fiscalizando mis gastos y cuenta bancaria. "
         f"Acabo de gastar {format_currency(monto)} en '{concepto}' (Categoría: {categoria}).\n"
-        f"Contexto económico: {bot_context}\n{presupuesto_str}"
+        f"Contexto económico: {bot_context}\n{presupuesto_str}{anomalia_str}"
         f"Escribe un comentario breve de 1 o 2 oraciones reaccionando a este gasto, siempre manteniendo un toque humorístico.\n"
         f"EJEMPLO DE REACCIÓN: Si el gasto es evitable (como Uber excesivo) o en salidas, "
         f"reacciona de acuerdo a tu rol ({bot_tone}).\n"
