@@ -307,6 +307,9 @@ class GoogleSheetsClient:
             values = result.get('values', [])
             
             resumen = {}
+            # Categorías de ingresos nativas (donde el ingreso suma positivamente)
+            categorias_ingreso = ["Remuneraciones", "Otros Ingresos", "Inversiones"]
+            
             for row in values[1:]: # Saltar encabezado
                 if len(row) >= 6:
                     fecha_str = row[1]
@@ -314,13 +317,28 @@ class GoogleSheetsClient:
                     monto_str = str(row[3]).replace(',', '')
                     categoria = row[5]
                     
-                    if fecha_str.startswith(mes_objetivo) and tipo.lower() == "gasto":
+                    if fecha_str.startswith(mes_objetivo):
                         try:
                             monto = float(monto_str)
                             if categoria not in resumen:
                                 resumen[categoria] = {"total": 0, "count": 0}
-                            resumen[categoria]["total"] += monto
-                            resumen[categoria]["count"] += 1
+                            
+                            is_ingreso_nativo = categoria in categorias_ingreso
+                            
+                            if tipo.lower() == "gasto":
+                                if is_ingreso_nativo:
+                                    resumen[categoria]["total"] -= monto # Gasto en categoría de ingreso resta
+                                else:
+                                    resumen[categoria]["total"] += monto # Gasto en categoría de gasto suma
+                                resumen[categoria]["count"] += 1
+                                
+                            elif tipo.lower() == "ingreso":
+                                if is_ingreso_nativo:
+                                    resumen[categoria]["total"] += monto # Ingreso en categoría de ingreso suma
+                                else:
+                                    resumen[categoria]["total"] -= monto # Ingreso en categoría de gasto resta (NETEO)
+                                # No sumamos al 'count' de transacciones de gasto principal, o sí? Lo dejamos sumar para saber que hubo movimientos.
+                                resumen[categoria]["count"] += 1
                         except ValueError:
                             continue
             return resumen, target_month, target_year

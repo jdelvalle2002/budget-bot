@@ -13,6 +13,7 @@ La gracia principal es que le puedes hablar en lenguaje natural (por ejemplo: *"
 *   **Resúmenes visuales (`/resumen`):** El bot genera un gráfico circular con lo gastado en el mes (o el mes anterior) directamente en el chat.
 *   **Consultas (`?`):** Le puedes hacer preguntas financieras a la IA sobre tu propia base de datos (ej. *"¿cuánto gasté en comida la semana pasada?"*).
 *   **Edición desde Telegram:** Permite revisar y borrar/editar los últimos registros usando botones integrados en el chat.
+*   **Neteo Automático de Gastos:** Si registras un "Ingreso" en una categoría de gasto tradicional (por ejemplo, cuando un amigo te transfiere su parte del supermercado a "Alimentación"), el bot automáticamente *restará* ese ingreso del total de gastos en los resúmenes y consultas, manteniendo tus presupuestos limpios y reales.
 *   **Sin estado (Stateless):** El bot no guarda estado persistente local (usa una máquina de estados efímera) para poder desplegarlo en la nube sin problemas.
 
 ---

@@ -548,7 +548,23 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
                 
     except ValueError as ve:
         logger.error(f"Error de validación/parseo: {ve}")
-        await enviar_mensaje_telegram(chat_id, f"⚠️ No pude entender el mensaje:\n_{ve}_")
+        
+        # Extraer mensaje limpio si es un error de validación de Pydantic
+        error_msg = str(ve)
+        if hasattr(ve, 'errors') and callable(ve.errors):
+            try:
+                mensajes = []
+                for err in ve.errors():
+                    msg = err.get('msg', '')
+                    if msg.startswith('Value error, '):
+                        msg = msg.replace('Value error, ', '', 1)
+                    mensajes.append(f"• {msg}")
+                if mensajes:
+                    error_msg = "\n".join(mensajes)
+            except Exception:
+                pass
+                
+        await enviar_mensaje_telegram(chat_id, f"⚠️ No pude procesar el mensaje por este motivo:\n_{error_msg}_")
     except Exception as e:
         logger.error(f"Error inesperado: {e}")
         await enviar_mensaje_telegram(chat_id, "❌ Error interno del servidor procesando tu mensaje.")

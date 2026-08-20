@@ -289,23 +289,39 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
         
         txs_filtradas = filtrar_transacciones(transacciones, filtro_tiempo)
         
-        # Filtramos solo gastos por defecto, salvo que sea búsqueda
-        gastos = [tx for tx in txs_filtradas if str(tx.get('tipo', '')).lower() == 'gasto']
+        # Helper para el neteo
+        categorias_ingreso = ["Remuneraciones", "Otros Ingresos", "Inversiones"]
         
+        def get_monto_neto(tx) -> Decimal:
+            m = Decimal(str(tx.get('monto', 0)).replace(',','').replace('$',''))
+            tipo = str(tx.get('tipo', '')).lower()
+            cat = str(tx.get('categoria', ''))
+            is_ingreso_nativo = cat in categorias_ingreso
+            
+            if tipo == "gasto":
+                return -m if is_ingreso_nativo else m
+            elif tipo == "ingreso":
+                return m if is_ingreso_nativo else -m
+            return m
+
         # Filtramos por categoría si viene explícita (para Totales y Promedios)
+        analisis_txs = txs_filtradas
         if categoria_obj and intent in [IntentType.GASTO_TOTAL, IntentType.GASTO_PROMEDIO]:
             cat_obj_norm = quitar_acentos(categoria_obj.lower())
-            gastos = [tx for tx in gastos if cat_obj_norm in quitar_acentos(tx.get('categoria', '').lower())]
+            analisis_txs = [tx for tx in analisis_txs if cat_obj_norm in quitar_acentos(tx.get('categoria', '').lower())]
+        elif intent in [IntentType.GASTO_TOTAL, IntentType.GASTO_PROMEDIO, IntentType.DESGLOSE_METODO, IntentType.DESGLOSE_CATEGORIA]:
+            # Por defecto excluimos ingresos nativos para ver el neto de "gastos"
+            analisis_txs = [tx for tx in analisis_txs if tx.get('categoria', '') not in categorias_ingreso]
 
         respuesta_final = ""
         
         if intent == IntentType.GASTO_TOTAL:
-            total = sum(Decimal(str(tx.get('monto', 0)).replace(',','').replace('$','')) for tx in gastos)
+            total = sum(get_monto_neto(tx) for tx in analisis_txs)
             cat_str = f" en {categoria_obj}" if categoria_obj else ""
             respuesta_final = f"📊 Tu gasto total{cat_str} ({filtro_tiempo.value.replace('_', ' ')}) es de **{format_currency(total)}**."
             
         elif intent == IntentType.GASTO_PROMEDIO:
-            total = sum(Decimal(str(tx.get('monto', 0)).replace(',','').replace('$','')) for tx in gastos)
+            total = sum(get_monto_neto(tx) for tx in analisis_txs)
             import calendar
             dias = 1
             if filtro_tiempo == FiltroTiempo.ESTE_MES:
@@ -317,9 +333,9 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
             elif filtro_tiempo == FiltroTiempo.ESTE_AÑO:
                 dias = (hoy_date - date(hoy_date.year, 1, 1)).days + 1
             elif filtro_tiempo == FiltroTiempo.SIEMPRE:
-                if gastos:
+                if analisis_txs:
                     fechas_validas = []
-                    for tx in gastos:
+                    for tx in analisis_txs:
                         try:
                             f = tx.get('fecha', '').split("T")[0]
                             fechas_validas.append(date.fromisoformat(f))
@@ -335,9 +351,9 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
             
         elif intent == IntentType.DESGLOSE_METODO:
             desglose = defaultdict(Decimal)
-            for tx in gastos:
+            for tx in analisis_txs:
                 metodo = tx.get('metodo', 'Desconocido')
-                desglose[metodo] += Decimal(str(tx.get('monto', 0)).replace(',','').replace('$',''))
+                desglose[metodo] += get_monto_neto(tx)
             
             respuesta_final = f"💳 **Desglose por Método de Pago ({filtro_tiempo.value.replace('_', ' ')}):**\n"
             total = Decimal(0)
@@ -349,11 +365,11 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
         elif intent == IntentType.DESGLOSE_CATEGORIA:
             desglose = defaultdict(Decimal)
             cat_obj_norm = quitar_acentos(categoria_obj.lower()) if categoria_obj else ""
-            for tx in gastos:
+            for tx in analisis_txs:
                 cat = tx.get('categoria', 'Sin Categoría')
                 if cat_obj_norm and cat_obj_norm not in quitar_acentos(cat.lower()):
                     continue
-                desglose[cat] += Decimal(str(tx.get('monto', 0)).replace(',','').replace('$',''))
+                desglose[cat] += get_monto_neto(tx)
             
             respuesta_final = f"📁 **Desglose por Categoría ({filtro_tiempo.value.replace('_', ' ')}):**\n"
             total = Decimal(0)
@@ -374,14 +390,14 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
             termino_norm = quitar_acentos(termino.lower())
             
             coincidencias = [
-                tx for tx in gastos 
+                tx for tx in analisis_txs 
                 if termino_norm in quitar_acentos(str(tx.get('concepto', '')).lower())
                 or termino_norm in quitar_acentos(str(tx.get('categoria', '')).lower())
                 or termino_norm in quitar_acentos(str(tx.get('comentarios', '')).lower())
             ]
             
             veces = len(coincidencias)
-            total = sum(Decimal(str(tx.get('monto', 0)).replace(',','').replace('$','')) for tx in coincidencias)
+            total = sum(get_monto_neto(tx) for tx in coincidencias)
             
             if veces == 0:
                 respuesta_final = f"🔎 No encontré gastos relacionados a '{termino}' ({filtro_tiempo.value.replace('_', ' ')})."
@@ -394,7 +410,7 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
                     respuesta_final += "\n\nÚltimos registros:\n"
                     for tx in ultimos_3:
                         fecha = str(tx.get('fecha', '')).split('T')[0]
-                        monto_tx = Decimal(str(tx.get('monto', 0)).replace(',','').replace('$',''))
+                        monto_tx = get_monto_neto(tx)
                         respuesta_final += f"• {fecha}: {format_currency(monto_tx)} ({tx.get('concepto', '')})\n"
                         
         else: # Fallback
@@ -430,7 +446,7 @@ def generar_comentario_ironico(monto: Decimal, concepto: str, categoria: str, es
         f"EJEMPLO DE REACCIÓN: Si el gasto es evitable (como Uber excesivo) o en salidas, "
         f"reacciona de acuerdo a tu rol ({bot_tone}).\n"
         f"REGLAS ESTRICTAS:\n"
-        f"1. Cero consejos financieros (no me digas qué hacer con mi plata ni cómo ahorrar).\n"
+        f"1. Cero consejos financieros (no me digas qué hacer con mi plata ni cómo ahorrar, pero incentivame a cuidar mis gastos).\n"
         f"2. Sé sutil con el contexto (no es necesario aludir explícitamente al país o al monto, pero puede sumar si lo consideras adecuado).\n"
         f"3. Agrega un ÚNICO emoji al final de tu comentario que resuma la reacción, y entrega solo el texto sin formato markdown."
     )
