@@ -73,3 +73,12 @@ uvicorn src.main:app --reload
 *(Para que Telegram se comunique con tu entorno local necesitarás usar ngrok o similar).*
 
 Para **producción**, yo conecté el repositorio a un *Web Service* en **Render**, apuntando el comando de inicio a Uvicorn/Gunicorn. Al estar construido con FastAPI, funciona perfectamente recibiendo el tráfico como Webhook de Telegram.
+
+---
+
+## Próximas Mejoras (Roadmap / TODO)
+
+* [ ] **Gastos Anualizados:** Implementar distribución diferida en cuotas virtuales para compras anuales (gimnasio, seguros, suscripciones anuales) para evitar distorsiones en los presupuestos mensuales de caja.
+* [ ] **Método de Pago `Planilla`:** Soporte para consumos descontados por planilla laboral (ej. casino de la empresa con credencial), contabilizándolos en el gasto real de alimentación pero excluyéndolos de la resta del balance bancario neto.
+
+Para más detalles de arquitectura y diseño contable, consultar [docs/proposals/gastos_anualizados_y_planilla.md](docs/proposals/gastos_anualizados_y_planilla.md).
