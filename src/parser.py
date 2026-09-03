@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import re
+import random
 from decimal import Decimal
 from datetime import date
 from enum import Enum
@@ -97,10 +98,16 @@ class MultiTransactionExtraction(BaseModel):
     """Esquema para extraer múltiples transacciones."""
     transacciones: list[TransactionExtraction]
 
-def parse_transaction_message(text: str, message_id: str, categorias_disponibles: list[str]) -> ParseResult:
+def parse_transaction_message(text: str, message_id: str, categorias_disponibles: list[str] | None = None) -> ParseResult:
     """
     Parsea un mensaje de texto usando Regex o Gemini AI y devuelve un ParseResult.
     """
+    if not categorias_disponibles:
+        categorias_disponibles = list(CATEGORIAS_DICT.keys()) if CATEGORIAS_DICT else [
+            "Alimentación", "Transporte", "Salidas", "Servicios Básicos", 
+            "Salud", "Educación", "Otros Gastos", "Remuneraciones", "Inversiones"
+        ]
+
     # 1. Intentar Vía Rápida (Ahorra LLM)
     fast_result = try_fast_path(text, message_id)
     if fast_result:
@@ -422,9 +429,34 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
         logger.error(f"Error en consulta natural determinista: {e}")
         raise ValueError("Lo siento, mis circuitos analíticos fallaron al clasificar tu intención. Intenta nuevamente.")
 
-def generar_comentario_ironico(monto: Decimal, concepto: str, categoria: str, estado_presupuesto: str | None = None, es_anomalo: bool = False) -> str:
+ANGULOS_COMICOS = [
+    "Celebración cómplice (valida el gusto o la ocasión con alegría y picardía, luego contrarrestando con un comentario incentivando el ahorro).",
+    "Humor de autocuidado y recompensa (trata el gasto con cariño como un premio bien ganado a la rutina, bromeando sobre darse lujos merecidos).",
+    "Ironía liviana y simpática (una broma sobre cómo la tentación nos gana a todos, sin generar demasiada culpa ni juzgar con dureza).",
+    "Complicidad de 'ya fue, nada que hacer, mejor disfrútalo' (asumir la compra con buen ánimo y resignación, enfocándose en disfrutar el momento).",
+    "Optimismo financiero relajado (bromear con eventual futura suerte en el azar o lotería y que lo importante es el equilibrio general, no privarse de todo en la vida)."
+]
+
+def generar_comentario_ironico(
+    monto: Decimal,
+    concepto: str,
+    categoria: str,
+    estado_presupuesto: str | None = None,
+    es_anomalo: bool = False,
+    temperature: float | None = None,
+    angulo: str | None = None
+) -> str:
     """
-    Genera un comentario breve e irónico sobre una transacción recién registrada.
+    Genera un comentario breve, proporcionado e irónico sobre una transacción recién registrada.
+    
+    Args:
+        monto: Monto de la transacción en Decimal.
+        concepto: Descripción del gasto o ingreso.
+        categoria: Categoría de la transacción.
+        estado_presupuesto: Alerta de presupuesto mensual si aplica.
+        es_anomalo: Si el gasto sobrepasa significativamente la media histórica.
+        temperature: Temperatura para controlar creatividad (default: lee GEMINI_TEMPERATURE o 0.9).
+        angulo: Enfoque cómico específico opcional. Si es None, se escoge uno con probabilidad 0.75 (el 25% se omite).
     """
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
@@ -433,33 +465,71 @@ def generar_comentario_ironico(monto: Decimal, concepto: str, categoria: str, es
     client = genai.Client(api_key=api_key)
     
     bot_context = os.getenv("BOT_CONTEXT", "Chile, usando pesos chilenos sin decimales.")
-    bot_tone = os.getenv("BOT_TONE", "sarcástico, burlón y sin filtro pero amigable")
+    bot_tone = os.getenv("BOT_TONE", "crítico y fiscalizador, pero constructivo y amable, con una personalidad buena para los chistes y liviana")
+
+    if temperature is None:
+        try:
+            raw_temp = os.getenv("GEMINI_TEMPERATURE", os.getenv("BOT_TEMPERATURE", os.getenv("TEMPERATURE", "0.9")))
+            temperature = float(raw_temp)
+        except (ValueError, TypeError):
+            temperature = 0.9
+            
+    if angulo is not None:
+        angulo_seleccionado = angulo
+    else:
+        # Probabilidad de 0.6 de sugerir un ángulo cómico; 0.25 de omitirlo para variedad orgánica
+        angulo_seleccionado = random.choice(ANGULOS_COMICOS) if random.random() < 0.6 else None
     
     presupuesto_str = f"\nOJO, DATO VITAL: {estado_presupuesto} Ten en cuenta esto en tu comentario si está cerca de pasarse o ya se pasó de su límite mensual.\n" if estado_presupuesto else ""
     
     anomalia_str = ""
     if es_anomalo:
         anomalia_str = "\n🚨 ¡ALERTA ANOMALÍA! Con este último registro, el usuario acaba de gastar mucho más de lo que gasta normalmente en un mes en esta categoría (superó su promedio histórico + 50%). Céntrate en esto: dale una ADVERTENCIA SERIA. No uses humor burlón para esta alerta, sé más constructivo pero mantén tu rol de fiscalizador.\n"
-    
-    prompt = (
-        f"Actúa como un amigo {bot_tone} que está fiscalizando mis gastos y cuenta bancaria. "
+
+    system_instruction = (
+        f"Eres un amigo/a chileno/a cercano/a {bot_tone} que acompaña al usuario fiscalizando sus finanzas con humor, y empatía crítica adecuada a su contexto.\n"
+        f"Contexto geográfico y monetario: {bot_context}\n\n"
+        "LENGUAJE Y VOCABULARIO CHILENO\n"
+        "- Habla como un amigo/a chileno/a real con naturalidad, evitando un vocabulario forzado, sin saturar con modismos.\n"
+        "- Usa modismos chilenos naturales y limpios: 'lucas', 'gustito', 'flojera' o 'lata', 'micro', 'andar pato', 'salir salado', 'ojo al charqui', 'bajón', 'hacerse el larry', 'ya fue', 'filo', 'la dura', 'el pique', 'el taco'.\n"
+        "- PROHIBIDO el vocabulario neutro de doblaje o foráneo: nada de 'pereza','subte', 'chaval', 'lana', 'plática', 'pana', 'nevera' ni 'ordenador'.\n"
+        "- Usa entonación chilena relajada y cotidiana (ej: 'buena po', 'la hiciste corta', 'igual aperraste', 'mañana toca compensar', entre otros).\n\n"
+        "FILOSOFÍA Y ESPÍRITU DEL BOT:\n"
+        "- Tu objetivo es acompañar al usuario con un toque de humor pícaro y entretenido, NUNCA hacerlo sentir culpable, tacaño o mal por gastar su propia plata. Puedes ser crítico pero siempre con empatía.\n"
+        "- Valida las cosas lindas y humanas: si el gasto es una celebración (como un logro académico, cumpleaños, aniversario, etc.), un regalo a un ser querido, un gusto bien ganado o un momento para compartir, ¡celébralo con alegría y buena onda! Sin olvidar el rol fiscalizador\n"
+        "- Critica los gastos excesivos, evitables o cómodos con ironía y humor. No seas complaciente con el usuario pero no lo hagas sentirse mala persona.\n"
+        "SENTIDO DE PROPORCIÓN ECONÓMICA (CLP):\n"
+        "- Micro-gasto (< $5.000): Cosas cotidianas (café, snack, pasaje). Tómatelo con total normalidad; una broma simpática sobre los pequeños placeres diarios.\n"
+        "- Gasto habitual / moderado ($5.000 - $30.000): Salidas, comida rica, regalos piola, farmacia. Dinero estándar. Reconoce el gusto o la ocasión y tira una broma ligera de apoyo.\n"
+        "- Gasto medio ($30.000 - $80.000): Salida especial, compras mayores. Bromea con estilo sobre darse lujos de magnate, deseándole que lo disfrute al máximo.\n"
+        "- Gasto fuerte (> $80.000): Compras importantes. Aquí sí cabe un recordatorio amistoso de fiscalizador atento para sugerir cuidar la billetera en lo que queda de mes, pero siempre con afecto y humor.\n\n"
+        "REGLAS ESTRICTAS DE ESTILO:\n"
+        "1. EVITAR hacer sentir culpable o mal al usuario (NADA de decir que 'botó la plata', que 'sus ahorros lo odian' o juzgarlo con dureza). Sé el amigo bueno para la talla pero fiscalizador y que incentiva el ahorro.\n"
+        "2. PROHIBIDO el lenguaje soez, vulgar o con garabatos (NADA de 'mierda', 'aweonao', etc.). Mantén el humor pícaro, cálido, liviano y chispeante.\n"
+        "3. EVITAR empezar tu respuesta repitiendo el monto y concepto (NADA de '¿X lucas en Y?' ni 'X lucas en Y...'). Entra directo a la idea o al comentario.\n"
+        "4. EVITAR la muletilla cliché de 'a fin de mes vas a comer tierra/aire'. Sé creativo con situaciones cotidianas y optimistas.\n"
+        "5. Sé conciso: COMO MÁXIMO 2 oraciones breves.\n"
+        "6. Agrega un ÚNICO emoji al final de tu comentario. Entrega solo texto plano sin formato markdown."
+    )
+
+    angulo_linea = f"Enfoque cómico sugerido para variar tu respuesta: {angulo_seleccionado}\n" if angulo_seleccionado else ""
+
+    user_prompt = (
         f"Acabo de gastar {format_currency(monto)} en '{concepto}' (Categoría: {categoria}).\n"
-        f"Contexto económico: {bot_context}\n{presupuesto_str}{anomalia_str}"
-        f"Escribe un comentario breve de 1 o 2 oraciones reaccionando a este gasto, siempre manteniendo un toque humorístico.\n"
-        f"EJEMPLO DE REACCIÓN: Si el gasto es evitable (como Uber excesivo) o en salidas, "
-        f"reacciona de acuerdo a tu rol ({bot_tone}).\n"
-        f"REGLAS ESTRICTAS:\n"
-        f"1. Cero consejos financieros (no me digas qué hacer con mi plata ni cómo ahorrar, pero incentivame a cuidar mis gastos).\n"
-        f"2. Sé sutil con el contexto (no es necesario aludir explícitamente al país o al monto, pero puede sumar si lo consideras adecuado).\n"
-        f"3. Agrega un ÚNICO emoji al final de tu comentario que resuma la reacción, y entrega solo el texto sin formato markdown."
+        f"{presupuesto_str}{anomalia_str}"
+        f"{angulo_linea}"
+        "Escribe tu comentario breve de 1 o 2 oraciones:"
     )
     
     try:
         chat = client.chats.create(
             model='gemini-flash-lite-latest',
-            config=types.GenerateContentConfig(temperature=0.85)
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                temperature=temperature
+            )
         )
-        response = chat.send_message(prompt)
+        response = chat.send_message(user_prompt)
         return response.text.strip()
     except Exception as e:
         logger.error(f"Error generando comentario ironico: {e}")
