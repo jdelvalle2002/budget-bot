@@ -452,10 +452,15 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
                     if pct > 100:
                         alert = "🔴 EXCEDIDO" if is_strict else "🔵 Completado"
                         msg_lineas.append(f"- *{cat}:* {format_currency(datos['total'])} / {format_currency(presupuesto)} ({pct:.0f}% {alert})")
+                    elif pct < 0:
+                        msg_lineas.append(f"- *{cat}:* {format_currency(datos['total'])} / {format_currency(presupuesto)} (🟢 Aporte neto a favor)")
                     else:
                         msg_lineas.append(f"- *{cat}:* {format_currency(datos['total'])} / {format_currency(presupuesto)} ({pct:.0f}% 🟢)")
                 else:
-                    msg_lineas.append(f"- *{cat}:* {format_currency(datos['total'])} ({datos['count']} txs)")
+                    if datos['total'] < 0:
+                        msg_lineas.append(f"- *{cat}:* {format_currency(datos['total'])} ({datos['count']} txs | 🟢 aporte neto a favor)")
+                    else:
+                        msg_lineas.append(f"- *{cat}:* {format_currency(datos['total'])} ({datos['count']} txs)")
             
         msg_lineas.append(f"\n💰 *Total Ingresos:* {format_currency(total_ingresos)}")
         if total_planilla > 0:
@@ -474,23 +479,33 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         else:
             msg_lineas.append(f"⚖️ *Balance Neto en Cuenta:* {format_currency(balance)}")
         
-        # Generar gráfico solo si hay gastos
+        # Generar gráfico solo para categorías con gasto positivo (ax.pie no admite valores negativos ni cero)
+        datos_grafico = [
+            (cat, m, col)
+            for cat, m, col in zip(categorias, montos, colores_usados)
+            if m > 0
+        ]
+        
         try:
-            if not montos:
+            if not datos_grafico:
                 await enviar_mensaje_telegram(chat_id, "\n".join(msg_lineas))
                 return
                 
             from src.models import get_local_date
             hora_gen = get_local_date().strftime("%d/%m/%Y")
             
+            cat_graf = [d[0] for d in datos_grafico]
+            montos_graf = [d[1] for d in datos_grafico]
+            colores_graf = [d[2] for d in datos_grafico]
+            
             fig, ax = plt.subplots(figsize=(8, 6), subplot_kw=dict(aspect="equal"))
             
             wedges, texts, autotexts = ax.pie(
-                montos, autopct='%1.1f%%', textprops=dict(color="w", weight="bold"), 
-                colors=colores_usados, startangle=140
+                montos_graf, autopct='%1.1f%%', textprops=dict(color="w", weight="bold"), 
+                colors=colores_graf, startangle=140
             )
             
-            ax.legend(wedges, categorias, title="Categorías", loc="center left", bbox_to_anchor=(1, 0, 0.5, 1))
+            ax.legend(wedges, cat_graf, title="Categorías", loc="center left", bbox_to_anchor=(1, 0, 0.5, 1))
             fig.suptitle(f"Gastos - Mes {t_month:02d}/{t_year}", fontsize=14, fontweight="bold", y=0.98)
             ax.set_title(f"Generado el: {hora_gen}", fontsize=10, color="gray", pad=15)
             
