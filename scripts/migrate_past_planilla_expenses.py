@@ -120,6 +120,11 @@ def main():
         action="store_true",
         help="Aplica los cambios en Google Sheets. Si no se incluye, corre en modo seguro (dry-run)."
     )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Omite la confirmación interactiva al aplicar los cambios."
+    )
 
     args = parser.parse_args()
     sheet_name = args.year if args.year else str(get_local_date().year)
@@ -156,12 +161,15 @@ def main():
         print("\nℹ️ Para ejecutar la actualización en tu planilla de Google Sheets, vuelve a correr:")
         print(f"   python scripts/migrate_past_planilla_expenses.py --apply\n")
     else:
-        print("\n¿Deseas aplicar estos cambios a Google Sheets ahora?")
-        try:
-            confirm = input("Escribe 'si' para confirmar: ").strip().lower()
-        except (KeyboardInterrupt, EOFError):
-            print("\nOperación cancelada.")
-            return
+        if args.yes:
+            confirm = "si"
+        else:
+            print("\n¿Deseas aplicar estos cambios a Google Sheets ahora?")
+            try:
+                confirm = input("Escribe 'si' para confirmar: ").strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                print("\nOperación cancelada.")
+                return
 
         if confirm in ["si", "sí", "yes", "y"]:
             print("\nActualizando transacciones en Google Sheets...")
