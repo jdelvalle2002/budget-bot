@@ -322,17 +322,21 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
     if texto_limpio in ["/ayuda", "ayuda", "help"]:
         msg = (
             "🤖 *Comandos Disponibles:*\n\n"
-            "Solo escríbeme lo que gastaste (ej: _'15000 en uber'_).\n\n"
+            "Solo escríbeme lo que gastaste o ingresaste de forma natural:\n"
+            "• _'15000 en uber'_\n"
+            "• _'3500 almuerzo casino pega'_ (automático por *Planilla*, no duplica descuentos de tu sueldo líquido)\n"
+            "• _'20000 taller deportivo por planilla'_\n"
+            "• _'Me pagaron 50 lucas que me debían'_\n\n"
             "O usa estos comandos avanzados:\n"
-            "📊 `/resumen` : Ver tus gastos del mes.\n"
+            "📊 `/resumen` : Ver tus gastos del mes (con desglose en cuenta/tarjetas vs. planilla).\n"
             "📈 `/tendencias` : Compara tus gastos de este mes (hasta hoy) con el mes pasado.\n"
             "⏪ `/resumen anterior` : Ver tus gastos del mes pasado.\n"
             "🕰️ `/ultimas` : Ver tus últimos 5 registros (te permite Editarlos o Borrarlos).\n"
             "📦 `/multi [gastos]` : Registra varios gastos de una sola vez separados por comas (ej: _/multi 15k uber, 50k super_).\n"
-            "🔎 `/buscar [texto]` : Busca registros por concepto o comentario (ej: _/buscar uber_).\n"
-            "💡 `? [pregunta]` : Hazme cualquier consulta analítica sobre tus datos (ej: _? en qué gasté más este mes_).\n"
+            "🔎 `/buscar [texto]` : Busca registros por concepto o comentario (ej: _/buscar casino_).\n"
+            "💡 `? [pregunta]` : Hazme cualquier consulta analítica sobre tus datos (ej: _? cuánto gasté en casino este mes_ o _? desglose por método_).\n"
             "❓ `/ayuda` : Ver este mensaje.\n\n"
-            "💡 *Tip:* Puedes entrar a tu planilla de Sheets y agregar montos en la nueva columna 'Presupuesto' de la pestaña 'Config' para que el bot controle tus límites mensuales."
+            "💡 *Tip:* Puedes entrar a tu planilla de Sheets y agregar montos en la columna 'Presupuesto' de la pestaña 'Config' para que el bot controle tus límites mensuales."
         )
         await enviar_mensaje_telegram(chat_id, msg)
         return
@@ -582,20 +586,22 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             await enviar_mensaje_telegram(chat_id, detalle, reply_markup=reply_markup)
         return
 
-    saludos = ["hola", "buenas", "buenos dias", "buenos días", "buenas tardes", "buenas noches", "/start", "start", "hello", "ayuda", "/ayuda"]
+    saludos = ["hola", "buenas", "buenos dias", "buenos días", "buenas tardes", "buenas noches", "/start", "start", "hello"]
     if texto_limpio in saludos:
         mensaje_bienvenida = (
             "¡Hola! 👋 Soy tu Bot Financiero.\n"
             "Dime qué gastaste o ingresaste y yo lo anotaré en tu planilla.\n\n"
             "💡 *Ejemplos:*\n"
             "• _'Gasté 15000 en uber'_\n"
+            "• _'3500 almuerzo menu casino pega'_ (automático por planilla 🏢)\n"
             "• _'Me pagaron 50 lucas que me debían'_\n"
-            "• _'? cuánto he gastado en transporte este mes'_\n\n"
+            "• _'? cuánto he gastado en casino este mes'_\n\n"
             "⚙️ *Comandos:*\n"
+            "• `/resumen` - Resumen del mes y gráfico con desglose cuenta/planilla.\n"
             "• `/buscar <texto>` - Busca registros por concepto o comentario.\n"
-            "• `/ultimas` - Muestra los últimos 5 registros.\n"
+            "• `/ultimas` - Muestra los últimos 5 registros con opciones de edición.\n"
             "• `/multi` - Registra varios gastos a la vez.\n"
-            "• `/resumen` - Genera un gráfico del mes."
+            "• `/ayuda` - Ver todos los comandos y detalles."
         )
         await enviar_mensaje_telegram(chat_id, mensaje_bienvenida)
         return
