@@ -183,6 +183,63 @@ async def generar_y_enviar_grafico_barras(chat_id: str, month_offset: int = 0):
     )
     await enviar_foto_telegram(chat_id, buf.getvalue(), caption=caption)
 
+async def generar_y_enviar_reporte_ritmo(chat_id: str):
+    """Genera y envía el tablero diagnóstico de ritmo de gasto (Pacing / Burn-Rate)."""
+    await enviar_mensaje_telegram(chat_id, "⏳ Calculando el ritmo de tus presupuestos...")
+    try:
+        category_config = sheets_client.load_categories_from_config() if sheets_client else {}
+        resumen, _, _ = sheets_client.get_month_summary(0) if sheets_client else ({}, 0, 0)
+    except Exception as e:
+        logger.error(f"Error cargando datos para /ritmo: {e}")
+        await enviar_mensaje_telegram(chat_id, "❌ Error consultando tus datos para el diagnóstico de ritmo.")
+        return
+
+    from src.pacing import compute_category_pacing, format_pacing_report
+
+    metrics = []
+    for cat, cfg in category_config.items():
+        if isinstance(cfg, dict):
+            presup = cfg.get("presupuesto")
+            if presup is not None and presup > 0:
+                d_cat = resumen.get(cat, {})
+                g_neto = Decimal(str(d_cat.get("total", 0)))
+                g_bruto = Decimal(str(d_cat.get("gasto_bruto", g_neto if g_neto > 0 else 0)))
+                aportes = Decimal(str(d_cat.get("aportes", 0)))
+                
+                m = compute_category_pacing(
+                    categoria=cat,
+                    limite=Decimal(str(presup)),
+                    gasto_neto=g_neto,
+                    gasto_bruto=g_bruto,
+                    aportes=aportes
+                )
+                if m:
+                    metrics.append(m)
+
+    if not metrics:
+        msg = (
+            "ℹ️ No tienes categorías con presupuesto activo para calcular el ritmo de gasto.\n\n"
+            "Usa `/presupuesto` para definir tus límites mensuales."
+        )
+        reply_markup = {
+            "inline_keyboard": [
+                [{"text": "➕ Definir Presupuesto", "callback_data": "presup_menu"}]
+            ]
+        }
+        await enviar_mensaje_telegram(chat_id, msg, reply_markup=reply_markup)
+        return
+
+    reporte_md = format_pacing_report(metrics)
+    reply_markup = {
+        "inline_keyboard": [
+            [
+                {"text": "✏️ Modificar Presupuesto", "callback_data": "presup_menu"},
+                {"text": "📊 Ver Resumen del Mes", "callback_data": "chart_bar:0"}
+            ]
+        ]
+    }
+    await enviar_mensaje_telegram(chat_id, reporte_md, reply_markup=reply_markup)
+
 async def finalizar_guardado_transaccion(chat_id: str, session, tx: Transaction, es_edicion: bool = False):
     """Guarda o actualiza la transacción confirmada, calcula alertas y envía feedback al usuario."""
     if es_edicion and session.edit_transaction_id:
@@ -203,9 +260,13 @@ async def finalizar_guardado_transaccion(chat_id: str, session, tx: Transaction,
         # INYECCIÓN DE PRESUPUESTO (Solo para gastos nuevos y estrictos)
         es_anomalo = False
         estado_presupuesto = None
+        pacing_alert_text = None
         if str(tx.tipo.value).lower() == "gasto" and sheets_client:
             resumen_mes, _, _ = sheets_client.get_month_summary(0)
-            acumulado = resumen_mes.get(tx.categoria, {}).get("total", 0)
+            datos_cat = resumen_mes.get(tx.categoria, {})
+            acumulado = datos_cat.get("total", 0)
+            gasto_b = datos_cat.get("gasto_bruto", acumulado)
+            aportes_cat = datos_cat.get("aportes", 0)
             
             promedio = sheets_client.get_category_monthly_average(tx.categoria)
             if promedio > 0 and acumulado > promedio * 1.5:
@@ -217,10 +278,36 @@ async def finalizar_guardado_transaccion(chat_id: str, session, tx: Transaction,
                 presupuesto = cat_config.get("presupuesto") if isinstance(cat_config, dict) else None
                 
                 if presupuesto and presupuesto > 0:
-                    if acumulado > presupuesto:
-                        estado_presupuesto = f"Lleva gastado {format_currency(acumulado)} en el mes, y su límite es {format_currency(presupuesto)}. ¡Se excedió!"
-                    elif acumulado >= presupuesto * 0.8:
-                        estado_presupuesto = f"Lleva gastado {format_currency(acumulado)} en el mes, y su límite es {format_currency(presupuesto)}. ¡Está peligrosamente cerca!"
+                    from src.pacing import compute_category_pacing
+                    from src.models import get_local_date
+                    pacing_metric = compute_category_pacing(
+                        categoria=tx.categoria,
+                        limite=Decimal(str(presupuesto)),
+                        gasto_neto=Decimal(str(acumulado)),
+                        gasto_bruto=Decimal(str(gasto_b)),
+                        aportes=Decimal(str(aportes_cat))
+                    )
+                    
+                    if pacing_metric:
+                        if pacing_metric.porcentaje_gastado > 100:
+                            estado_presupuesto = f"Lleva gastado {format_currency(pacing_metric.gasto_neto)} en el mes, y su límite es {format_currency(pacing_metric.limite)}. ¡Se excedió!"
+                            pacing_alert_text = f"🔴 *¡Presupuesto Excedido!* Has gastado {format_currency(pacing_metric.gasto_neto)} de tu límite de {format_currency(pacing_metric.limite)}."
+                        elif pacing_metric.es_alerta:
+                            estado_presupuesto = f"Lleva gastado {format_currency(pacing_metric.gasto_neto)} en el mes, y su límite es {format_currency(pacing_metric.limite)}. Ritmo acelerado ({pacing_metric.burn_ratio:.1f}x)."
+                            if pacing_metric.nivel_severidad == "CRITICAL":
+                                pacing_alert_text = (
+                                    f"⚠️ *Alerta de Ritmo:* Al día {get_local_date().day} has consumido el *{pacing_metric.porcentaje_gastado:.0f}%* de *{tx.categoria}*. "
+                                    f"A este ritmo lo agotarás el *Día {pacing_metric.dia_agotamiento}*."
+                                )
+                                if pacing_metric.margen_diario_restante > 0:
+                                    pacing_alert_text += f"\n💡 Margen seguro restante: *{format_currency(pacing_metric.margen_diario_restante)}/día*."
+                            elif pacing_metric.nivel_severidad == "WARNING":
+                                pacing_alert_text = (
+                                    f"🟡 *Ritmo Acelerado:* Llevas el *{pacing_metric.porcentaje_gastado:.0f}%* de *{tx.categoria}* (Ritmo {pacing_metric.burn_ratio:.1f}x). "
+                                    f"Margen seguro: *{format_currency(pacing_metric.margen_diario_restante)}/día*."
+                                )
+                        elif acumulado >= presupuesto * 0.8:
+                            estado_presupuesto = f"Lleva gastado {format_currency(acumulado)} en el mes, y su límite es {format_currency(presupuesto)}. ¡Está peligrosamente cerca!"
         
         from src.parser import generar_comentario_ironico
         chiste = generar_comentario_ironico(
@@ -241,6 +328,8 @@ async def finalizar_guardado_transaccion(chat_id: str, session, tx: Transaction,
         )
         if chiste:
             msg_exito += f"\n\n🤖 _{chiste}_"
+        if pacing_alert_text:
+            msg_exito += f"\n\n{pacing_alert_text}"
             
     if success:
         reply_markup = {
@@ -359,6 +448,9 @@ async def process_telegram_callback(chat_id: str, callback_data: str):
             m_offset = 0
         await generar_y_enviar_grafico_barras(chat_id, month_offset=m_offset)
 
+    elif callback_data == "pacing_view":
+        await generar_y_enviar_reporte_ritmo(chat_id)
+
 async def process_telegram_update(chat_id: str, text: str, message_id: str):
     """
     Lógica conversacional que se ejecuta en Background para no bloquear a Telegram.
@@ -373,6 +465,7 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         "/buscar",
         "/ultimas", "últimas", "ultimas",
         "/presupuesto", "presupuesto",
+        "/ritmo", "ritmo", "/pacing", "pacing",
         "/resumen", "resumen",
         "/tendencias", "tendencias",
         "/multi",
@@ -557,6 +650,7 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             "O usa estos comandos avanzados:\n"
             "📊 `/resumen` : Ver tus gastos del mes (con desglose en cuenta/tarjetas vs. planilla).\n"
             "🎯 `/presupuesto` : Ver el presupuesto mensual definido por categoría y el total.\n"
+            "⏱️ `/ritmo` : Diagnóstico predictivo de velocidad de gasto (burn rate) y margen diario seguro.\n"
             "📈 `/tendencias` : Compara tus gastos de este mes (hasta hoy) con el mes pasado.\n"
             "⏪ `/resumen anterior` : Ver tus gastos del mes pasado.\n"
             "🕰️ `/ultimas` : Ver tus últimos 5 registros (te permite Editarlos o Borrarlos).\n"
@@ -676,12 +770,21 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         if sin_presupuesto:
             lineas.append(f"\n💡 _Nota: Hay {len(sin_presupuesto)} categorías sin límite asignado en la pestaña 'Config'._")
 
+        lineas.append("\n💡 *Tip:* Usa `/ritmo` o presiona el botón de abajo para ver la velocidad de gasto proyectada.")
+
         reply_markup = {
             "inline_keyboard": [
-                [{"text": "✏️ Modificar Presupuesto", "callback_data": "presup_menu"}]
+                [
+                    {"text": "✏️ Modificar Presupuesto", "callback_data": "presup_menu"},
+                    {"text": "⏱️ Ver Ritmo (/ritmo)", "callback_data": "pacing_view"}
+                ]
             ]
         }
         await enviar_mensaje_telegram(chat_id, "\n".join(lineas), reply_markup=reply_markup)
+        return
+
+    if texto_limpio in ["/ritmo", "ritmo", "/pacing", "pacing"] or texto_limpio.startswith("/ritmo") or texto_limpio.startswith("/pacing"):
+        await generar_y_enviar_reporte_ritmo(chat_id)
         return
 
     if texto_limpio.startswith("/resumen") or texto_limpio.startswith("resumen"):

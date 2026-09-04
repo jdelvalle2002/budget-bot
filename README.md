@@ -12,6 +12,7 @@ La gracia principal es que le puedes hablar en lenguaje natural (por ejemplo: *"
 *   **Ingreso múltiple (`/multi`):** Permite ingresar varios gastos de una sola vez separados por coma.
 *   **Resúmenes visuales (`/resumen`):** El bot genera un gráfico circular con lo gastado en el mes (o el mes anterior) directamente en el chat.
 *   **Gestión de Presupuestos (`/presupuesto`):** Consulta en tiempo real tus límites mensuales definidos en la pestaña `Config`, el total presupuestado, y modifica o elimina límites directamente con botones interactivos.
+*   **Diagnóstico de Ritmo de Gasto (`/ritmo`):** Evalúa la velocidad de consumo (*Burn-Rate*) de cada categoría respecto al calendario mensual, proyecta el cierre y calcula el margen seguro diario restante.
 *   **Consultas (`?`):** Le puedes hacer preguntas financieras a la IA sobre tu propia base de datos (ej. *"¿cuánto gasté en comida la semana pasada?"*).
 *   **Edición desde Telegram:** Permite revisar y borrar/editar los últimos registros usando botones integrados en el chat.
 *   **Neteo Automático de Gastos:** Si registras un "Ingreso" en una categoría de gasto tradicional (por ejemplo, cuando un amigo te transfiere su parte del supermercado a "Alimentación"), el bot automáticamente *restará* ese ingreso del total de gastos en los resúmenes y consultas, manteniendo tus presupuestos limpios y reales.
@@ -75,11 +76,17 @@ uvicorn src.main:app --reload
 
 Para **producción**, yo conecté el repositorio a un *Web Service* en **Render**, apuntando el comando de inicio a Uvicorn/Gunicorn. Al estar construido con FastAPI, funciona perfectamente recibiendo el tráfico como Webhook de Telegram.
 
+### 4. Configurar Comandos en Telegram (BotFather)
+Para que Telegram muestre el menú desplegable de autocompletado de comandos al escribir `/`:
+1. Abre una conversación con [@BotFather](https://t.me/BotFather) en Telegram.
+2. Envía el comando `/setcommands` y selecciona tu bot.
+3. Pega la lista de comandos oficial detallada en [docs/botfather_commands.md](docs/botfather_commands.md).
+
 ---
 
 ## Próximas Mejoras (Roadmap / TODO)
 
-* [ ] **Control de Ritmo y Burn Rate Predictivo (`/ritmo`):** Alertas predictivas de velocidad de gasto en base a avance del calendario, días proyectados para agotamiento y margen seguro diario. Consultar [docs/proposals/burn_rate_predictivo.md](docs/proposals/burn_rate_predictivo.md).
+* [x] **Control de Ritmo y Burn Rate Predictivo (`/ritmo`):** Alertas predictivas de velocidad de gasto en base a avance del calendario, días proyectados para agotamiento y margen seguro diario. Consultar [docs/proposals/burn_rate_predictivo.md](docs/proposals/burn_rate_predictivo.md).
 * [ ] **Optimizaciones UX a Presupuestos:** Actualización *in-place* (`editMessageText`), atajos rápidos (`/presupuesto cat monto`) y badges dinámicos. Consultar [docs/proposals/mejoras_presupuesto_y_ux_interactiva.md](docs/proposals/mejoras_presupuesto_y_ux_interactiva.md).
 * [ ] **Gastos Anualizados:** Implementar distribución diferida en cuotas virtuales para compras anuales (gimnasio, seguros, suscripciones anuales) para evitar distorsiones en los presupuestos mensuales de caja. Consultar [docs/proposals/gastos_anualizados_y_planilla.md](docs/proposals/gastos_anualizados_y_planilla.md).
 * [x] **Método de Pago `Planilla`:** Soporte para consumos descontados por planilla laboral (ej. casino de la empresa con credencial), contabilizándolos en el gasto real de alimentación pero excluyéndolos de la resta del balance bancario neto.
