@@ -11,7 +11,7 @@ La gracia principal es que le puedes hablar en lenguaje natural (por ejemplo: *"
 *   **Ingreso por lenguaje natural:** Escribes tu gasto de forma casual y el bot extrae los datos usando Gemini (ideal para el día a día).
 *   **Ingreso múltiple (`/multi`):** Permite ingresar varios gastos de una sola vez separados por coma.
 *   **Resúmenes visuales (`/resumen`):** El bot genera un gráfico circular con lo gastado en el mes (o el mes anterior) directamente en el chat.
-*   **Consulta de Presupuesto (`/presupuesto`):** Consulta en tiempo real tus límites mensuales definidos en la pestaña `Config` y el total presupuestado.
+*   **Gestión de Presupuestos (`/presupuesto`):** Consulta en tiempo real tus límites mensuales definidos en la pestaña `Config`, el total presupuestado, y modifica o elimina límites directamente con botones interactivos.
 *   **Consultas (`?`):** Le puedes hacer preguntas financieras a la IA sobre tu propia base de datos (ej. *"¿cuánto gasté en comida la semana pasada?"*).
 *   **Edición desde Telegram:** Permite revisar y borrar/editar los últimos registros usando botones integrados en el chat.
 *   **Neteo Automático de Gastos:** Si registras un "Ingreso" en una categoría de gasto tradicional (por ejemplo, cuando un amigo te transfiere su parte del supermercado a "Alimentación"), el bot automáticamente *restará* ese ingreso del total de gastos en los resúmenes y consultas, manteniendo tus presupuestos limpios y reales.
@@ -79,7 +79,6 @@ Para **producción**, yo conecté el repositorio a un *Web Service* en **Render*
 
 ## Próximas Mejoras (Roadmap / TODO)
 
-* [ ] **Gastos Anualizados:** Implementar distribución diferida en cuotas virtuales para compras anuales (gimnasio, seguros, suscripciones anuales) para evitar distorsiones en los presupuestos mensuales de caja.
-* [ ] **Método de Pago `Planilla`:** Soporte para consumos descontados por planilla laboral (ej. casino de la empresa con credencial), contabilizándolos en el gasto real de alimentación pero excluyéndolos de la resta del balance bancario neto.
+* [ ] **Gastos Anualizados:** Implementar distribución diferida en cuotas virtuales para compras anuales (gimnasio, seguros, suscripciones anuales) para evitar distorsiones en los presupuestos mensuales de caja. Consultar [docs/proposals/gastos_anualizados_y_planilla.md](docs/proposals/gastos_anualizados_y_planilla.md).
+* [x] **Método de Pago `Planilla`:** Soporte para consumos descontados por planilla laboral (ej. casino de la empresa con credencial), contabilizándolos en el gasto real de alimentación pero excluyéndolos de la resta del balance bancario neto.
 
-Para más detalles de arquitectura y diseño contable, consultar [docs/proposals/gastos_anualizados_y_planilla.md](docs/proposals/gastos_anualizados_y_planilla.md).
