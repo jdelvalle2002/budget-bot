@@ -576,17 +576,17 @@ def generar_comentario_ironico(
         "2. PROHIBIDO el lenguaje soez, vulgar o con garabatos (NADA de 'mierda', 'aweonao', etc.). Mantén el humor pícaro, cálido, liviano y chispeante.\n"
         "3. EVITAR empezar tu respuesta repitiendo el monto y concepto (NADA de '¿X lucas en Y?' ni 'X lucas en Y...'). Entra directo a la idea o al comentario.\n"
         "4. EVITAR la muletilla cliché de 'a fin de mes vas a comer tierra/aire'. Sé creativo con situaciones cotidianas y optimistas.\n"
-        "5. Sé conciso: COMO MÁXIMO 2 oraciones breves.\n"
+        "5. Sé conciso: idealmente 2 oraciones breves, como máximo 3.\n"
         "6. Agrega un ÚNICO emoji al final de tu comentario. Entrega solo texto plano sin formato markdown."
     )
 
-    angulo_linea = f"Enfoque cómico sugerido para variar tu respuesta: {angulo_seleccionado}\n" if angulo_seleccionado else ""
+    angulo_linea = f"Enfoque cómico sugerido para variar tu respuesta: {angulo_seleccionado}\n. No seas rígido con el ángulo, es una sugerencia" if angulo_seleccionado else ""
 
     user_prompt = (
         f"Acabo de gastar {format_currency(monto)} en '{concepto}' (Categoría: {categoria}).\n"
         f"{presupuesto_str}{anomalia_str}"
         f"{angulo_linea}"
-        "Escribe tu comentario breve de 1 o 2 oraciones:"
+        "Escribe tu comentario breve de 1 o 2 oraciones, máximo 3:"
     )
     
     try:
