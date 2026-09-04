@@ -17,6 +17,8 @@ def get_local_date() -> date:
 def format_currency(monto: Decimal) -> str:
     symbol = os.getenv("CURRENCY_SYMBOL", "$")
     decimals = int(os.getenv("CURRENCY_DECIMALS", "0"))
+    if monto < 0:
+        return f"-{symbol}{abs(monto):,.{decimals}f}"
     return f"{symbol}{monto:,.{decimals}f}"
 
 class TipoTransaccion(str, Enum):

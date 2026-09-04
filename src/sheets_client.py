@@ -330,9 +330,20 @@ class GoogleSheetsClient:
                             monto = float(monto_str)
                             metodo = str(row[6]).strip().capitalize() if len(row) > 6 else ""
                             if categoria not in resumen:
-                                resumen[categoria] = {"total": 0, "count": 0, "planilla": 0}
-                            elif "planilla" not in resumen[categoria]:
-                                resumen[categoria]["planilla"] = 0
+                                resumen[categoria] = {
+                                    "total": 0.0,
+                                    "gasto_bruto": 0.0,
+                                    "aportes": 0.0,
+                                    "count": 0,
+                                    "planilla": 0.0
+                                }
+                            else:
+                                if "gasto_bruto" not in resumen[categoria]:
+                                    resumen[categoria]["gasto_bruto"] = 0.0
+                                if "aportes" not in resumen[categoria]:
+                                    resumen[categoria]["aportes"] = 0.0
+                                if "planilla" not in resumen[categoria]:
+                                    resumen[categoria]["planilla"] = 0.0
                             
                             is_ingreso_nativo = categoria in categorias_ingreso
                             es_planilla = (metodo == "Planilla")
@@ -342,6 +353,7 @@ class GoogleSheetsClient:
                                     resumen[categoria]["total"] -= monto # Gasto en categoría de ingreso resta
                                 else:
                                     resumen[categoria]["total"] += monto # Gasto en categoría de gasto suma
+                                    resumen[categoria]["gasto_bruto"] += monto
                                     if es_planilla:
                                         resumen[categoria]["planilla"] += monto
                                 resumen[categoria]["count"] += 1
@@ -351,7 +363,7 @@ class GoogleSheetsClient:
                                     resumen[categoria]["total"] += monto # Ingreso en categoría de ingreso suma
                                 else:
                                     resumen[categoria]["total"] -= monto # Ingreso en categoría de gasto resta (NETEO)
-                                # No sumamos al 'count' de transacciones de gasto principal, o sí? Lo dejamos sumar para saber que hubo movimientos.
+                                    resumen[categoria]["aportes"] += monto
                                 resumen[categoria]["count"] += 1
                         except ValueError:
                             continue

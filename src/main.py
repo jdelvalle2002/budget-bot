@@ -1,4 +1,5 @@
 import re
+import json
 from decimal import Decimal
 import os
 import logging
@@ -83,7 +84,7 @@ def parse_budget_amount(text: str) -> Decimal | None:
     except Exception:
         raise ValueError("No pude entender el monto. Ingresa un valor numérico como 80k, 150000 o 0.")
 
-async def enviar_foto_telegram(chat_id: str, photo_bytes: bytes, caption: str = ""):
+async def enviar_foto_telegram(chat_id: str, photo_bytes: bytes, caption: str = "", reply_markup: dict = None):
     """Función auxiliar para enviar imágenes a Telegram"""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
     data = {
@@ -91,6 +92,8 @@ async def enviar_foto_telegram(chat_id: str, photo_bytes: bytes, caption: str = 
         "caption": caption,
         "parse_mode": "Markdown"
     }
+    if reply_markup:
+        data["reply_markup"] = json.dumps(reply_markup)
     files = {
         "photo": ("resumen.png", photo_bytes, "image/png")
     }
@@ -99,6 +102,86 @@ async def enviar_foto_telegram(chat_id: str, photo_bytes: bytes, caption: str = 
             await client.post(url, data=data, files=files)
         except Exception as e:
             logger.error(f"Error enviando foto a Telegram: {e}")
+
+async def generar_y_enviar_grafico_barras(chat_id: str, month_offset: int = 0):
+    """Genera y envía un gráfico de barras horizontales con el balance neto por categoría."""
+    await enviar_mensaje_telegram(chat_id, "⏳ Generando gráfico de barras comparativo...")
+    resumen, t_month, t_year = sheets_client.get_month_summary(month_offset=month_offset) if sheets_client else ({}, 0, 0)
+
+    if not resumen:
+        await enviar_mensaje_telegram(chat_id, f"ℹ️ No hay transacciones para {t_month:02d}/{t_year}.")
+        return
+
+    categorias_ingreso_nativas = ["Remuneraciones", "Otros Ingresos", "Inversiones"]
+
+    datos_barras = []
+    for cat, d in resumen.items():
+        if cat in categorias_ingreso_nativas:
+            continue
+        neto = d.get('total', 0)
+        gasto_b = d.get('gasto_bruto', 0)
+        aportes = d.get('aportes', 0)
+        if neto != 0 or gasto_b != 0 or aportes != 0:
+            datos_barras.append((cat, neto))
+
+    if not datos_barras:
+        await enviar_mensaje_telegram(chat_id, f"ℹ️ No hay gastos registrados para {t_month:02d}/{t_year}.")
+        return
+
+    import io
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    # Ordenar por valor neto ascendente para que los valores más altos queden arriba en barh
+    datos_barras.sort(key=lambda x: x[1])
+    cats = [d[0] for d in datos_barras]
+    vals = [d[1] for d in datos_barras]
+    colores = ['#2ECC71' if v < 0 else '#E74C3C' for v in vals]
+
+    fig_height = max(4.5, len(cats) * 0.55)
+    fig, ax = plt.subplots(figsize=(8.5, fig_height))
+    bars = ax.barh(cats, vals, color=colores, height=0.6)
+    ax.axvline(0, color='#7F8C8D', linestyle='--', linewidth=1.2)
+
+    min_val = min(vals) if vals else 0
+    max_val = max(vals) if vals else 0
+    padding = max(abs(min_val), abs(max_val)) * 0.28 if max(abs(min_val), abs(max_val)) > 0 else 1000
+    ax.set_xlim(min(0, min_val) - padding, max(0, max_val) + padding)
+
+    for bar, val in zip(bars, vals):
+        ancho = bar.get_width()
+        ha = 'right' if val < 0 else 'left'
+        offset = -6 if val < 0 else 6
+        txt = format_currency(Decimal(str(abs(val))))
+        if val < 0:
+            txt = f"+{txt} (a favor)"
+        ax.annotate(
+            txt,
+            xy=(ancho, bar.get_y() + bar.get_height() / 2),
+            xytext=(offset, 0),
+            textcoords='offset points',
+            ha=ha, va='center',
+            fontsize=9, fontweight='bold',
+            color='#27AE60' if val < 0 else '#C0392B'
+        )
+
+    ax.set_title(f"Balance Neto por Categoría - Mes {t_month:02d}/{t_year}\n(Verde: Aporte a favor | Rojo: Gasto neto)", fontsize=11, fontweight='bold', pad=15)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.grid(axis='x', linestyle=':', alpha=0.5)
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', bbox_inches='tight')
+    buf.seek(0)
+    plt.close(fig)
+
+    caption = (
+        f"📊 *Balance Neto por Categoría - {t_month:02d}/{t_year}*\n\n"
+        f"• 🔴 *Rojo (derecha):* Gasto neto acumulado.\n"
+        f"• 🟢 *Verde (izquierda):* Categorías donde los aportes recibidos superaron al gasto (saldo a favor)."
+    )
+    await enviar_foto_telegram(chat_id, buf.getvalue(), caption=caption)
 
 async def finalizar_guardado_transaccion(chat_id: str, session, tx: Transaction, es_edicion: bool = False):
     """Guarda o actualiza la transacción confirmada, calcula alertas y envía feedback al usuario."""
@@ -267,6 +350,14 @@ async def process_telegram_callback(chat_id: str, callback_data: str):
         session.options = []
         session.edit_transaction_id = None
         await enviar_mensaje_telegram(chat_id, "🚫 Operación cancelada.")
+
+    elif callback_data.startswith("chart_bar:"):
+        offset_str = callback_data.split(":", 1)[1]
+        try:
+            m_offset = int(offset_str)
+        except ValueError:
+            m_offset = 0
+        await generar_y_enviar_grafico_barras(chat_id, month_offset=m_offset)
 
 async def process_telegram_update(chat_id: str, text: str, message_id: str):
     """
@@ -612,115 +703,167 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         import matplotlib.pyplot as plt
         
         msg_lineas = [f"📊 *Resumen Mensual - {t_month:02d}/{t_year}*\n"]
-        total_gastos = 0
+        total_gastos_bruto = 0
+        total_aportes = 0
+        total_gastos_neto = 0
         total_ingresos = 0
         total_planilla = 0
-        
+
         categorias = []
         montos = []
-        
+
         # Diccionario de configuración desde Google Sheets
         CATEGORY_CONFIG = sheets_client.load_categories_from_config() if sheets_client else {}
         default_colors = plt.cm.tab20.colors
         colores_usados = []
-        
+
         categorias_ingreso_nativas = ["Remuneraciones", "Otros Ingresos", "Inversiones"]
-        
-        for cat, datos in sorted(resumen.items(), key=lambda x: x[1]["total"], reverse=True):
+
+        # Ordenar por gasto bruto para que coincida con el gráfico circular
+        for cat, datos in sorted(resumen.items(), key=lambda x: x[1].get("gasto_bruto", x[1]["total"]), reverse=True):
             cat_config = CATEGORY_CONFIG.get(cat, {})
             presupuesto = cat_config.get("presupuesto") if isinstance(cat_config, dict) else None
-            
+
             is_ingreso = cat in categorias_ingreso_nativas
-            
+
             if is_ingreso:
                 total_ingresos += datos['total']
                 msg_lineas.append(f"🟢 *{cat}:* {format_currency(datos['total'])} ({datos['count']} txs)")
             else:
-                total_gastos += datos['total']
-                total_planilla += datos.get('planilla', 0)
-                categorias.append(cat)
-                montos.append(datos['total'])
-                
-                # Asignar color fijo o fallback
-                color_hex = cat_config.get("color") if isinstance(cat_config, dict) else None
-                color = color_hex if color_hex else default_colors[len(colores_usados) % len(default_colors)]
-                colores_usados.append(color)
-                
-                if presupuesto and presupuesto > 0:
-                    pct = (datos['total'] / presupuesto) * 100
-                    is_strict = cat not in ["Ahorro", "Inversiones", "Salud", "Cuentas Básicas", "Educación", "Remuneraciones", "Otros Ingresos", "Hogar"]
-                    
-                    if pct > 100:
-                        alert = "🔴 EXCEDIDO" if is_strict else "🔵 Completado"
-                        msg_lineas.append(f"- *{cat}:* {format_currency(datos['total'])} / {format_currency(presupuesto)} ({pct:.0f}% {alert})")
-                    elif pct < 0:
-                        msg_lineas.append(f"- *{cat}:* {format_currency(datos['total'])} / {format_currency(presupuesto)} (🟢 Aporte neto a favor)")
+                gasto_b = datos.get('gasto_bruto', datos['total'] if datos['total'] > 0 else 0)
+                aportes = datos.get('aportes', 0)
+                neto = datos['total']
+                planilla = datos.get('planilla', 0)
+
+                total_gastos_bruto += gasto_b
+                total_aportes += aportes
+                total_gastos_neto += neto
+                total_planilla += planilla
+
+                # En el gráfico circular graficamos el GASTO BRUTO consumido
+                if gasto_b > 0:
+                    categorias.append(cat)
+                    montos.append(gasto_b)
+
+                    color_hex = cat_config.get("color") if isinstance(cat_config, dict) else None
+                    color = color_hex if color_hex else default_colors[len(colores_usados) % len(default_colors)]
+                    colores_usados.append(color)
+
+                # Desglose transparente en texto
+                if aportes > 0:
+                    if neto < 0:
+                        saldo_favor = abs(neto)
+                        if presupuesto and presupuesto > 0:
+                            msg_lineas.append(f"- *{cat}:* {format_currency(gasto_b)} / {format_currency(presupuesto)} (🟢 Aporte: -{format_currency(aportes)} ➔ Saldo a favor: +{format_currency(saldo_favor)})")
+                        else:
+                            msg_lineas.append(f"- *{cat}:* {format_currency(gasto_b)} ({datos['count']} txs | 🟢 Aporte: -{format_currency(aportes)} ➔ Saldo a favor: +{format_currency(saldo_favor)})")
                     else:
-                        msg_lineas.append(f"- *{cat}:* {format_currency(datos['total'])} / {format_currency(presupuesto)} ({pct:.0f}% 🟢)")
+                        if presupuesto and presupuesto > 0:
+                            pct = (neto / presupuesto) * 100
+                            alert = "🔴 EXCEDIDO" if pct > 100 else ("🟢" if pct <= 80 else "🟡")
+                            msg_lineas.append(f"- *{cat}:* {format_currency(gasto_b)} (🟢 Aporte: -{format_currency(aportes)} ➔ Neto: {format_currency(neto)} / {format_currency(presupuesto)} | {pct:.0f}% {alert})")
+                        else:
+                            msg_lineas.append(f"- *{cat}:* {format_currency(gasto_b)} ({datos['count']} txs | 🟢 Aporte: -{format_currency(aportes)} ➔ Neto: {format_currency(neto)})")
                 else:
-                    if datos['total'] < 0:
-                        msg_lineas.append(f"- *{cat}:* {format_currency(datos['total'])} ({datos['count']} txs | 🟢 aporte neto a favor)")
+                    if presupuesto and presupuesto > 0:
+                        pct = (neto / presupuesto) * 100
+                        is_strict = cat not in ["Ahorro", "Inversiones", "Salud", "Cuentas Básicas", "Educación", "Remuneraciones", "Otros Ingresos", "Hogar"]
+
+                        if pct > 100:
+                            alert = "🔴 EXCEDIDO" if is_strict else "🔵 Completado"
+                            msg_lineas.append(f"- *{cat}:* {format_currency(neto)} / {format_currency(presupuesto)} ({pct:.0f}% {alert})")
+                        elif pct < 0:
+                            msg_lineas.append(f"- *{cat}:* {format_currency(neto)} / {format_currency(presupuesto)} (🟢 Aporte neto a favor)")
+                        else:
+                            msg_lineas.append(f"- *{cat}:* {format_currency(neto)} / {format_currency(presupuesto)} ({pct:.0f}% 🟢)")
                     else:
-                        msg_lineas.append(f"- *{cat}:* {format_currency(datos['total'])} ({datos['count']} txs)")
-            
+                        if neto < 0:
+                            msg_lineas.append(f"- *{cat}:* {format_currency(neto)} ({datos['count']} txs | 🟢 aporte neto a favor)")
+                        else:
+                            msg_lineas.append(f"- *{cat}:* {format_currency(neto)} ({datos['count']} txs)")
+
         msg_lineas.append(f"\n💰 *Total Ingresos:* {format_currency(total_ingresos)}")
-        if total_planilla > 0:
-            gastos_cuenta = total_gastos - total_planilla
-            msg_lineas.append(f"💸 *Total Gastos:* {format_currency(total_gastos)}")
-            msg_lineas.append(f"  ├─ 💳 *En cuenta/tarjetas:* {format_currency(gastos_cuenta)}")
-            msg_lineas.append(f"  └─ 🏢 *Por planilla:* {format_currency(total_planilla)}")
-            balance = total_ingresos - gastos_cuenta
+        if total_aportes > 0:
+            msg_lineas.append(f"💸 *Total Gastos Consumidos:* {format_currency(total_gastos_bruto)}")
+            msg_lineas.append(f"  ├─ 🟢 *Reembolsos/Aportes:* -{format_currency(total_aportes)}")
+            if total_planilla > 0:
+                gastos_cuenta = total_gastos_neto - total_planilla
+                msg_lineas.append(f"  ├─ 🏢 *Por planilla:* {format_currency(total_planilla)}")
+                if gastos_cuenta < 0:
+                    msg_lineas.append(f"  └─ 💳 *Gasto Neto en cuenta:* {format_currency(gastos_cuenta)} (a favor)")
+                else:
+                    msg_lineas.append(f"  └─ 💳 *Gasto Neto en cuenta:* {format_currency(gastos_cuenta)}")
+                balance = total_ingresos - gastos_cuenta
+            else:
+                if total_gastos_neto < 0:
+                    msg_lineas.append(f"  └─ 💳 *Gasto Neto:* {format_currency(total_gastos_neto)} (a favor)")
+                else:
+                    msg_lineas.append(f"  └─ 💳 *Gasto Neto:* {format_currency(total_gastos_neto)}")
+                balance = total_ingresos - total_gastos_neto
         else:
-            msg_lineas.append(f"💸 *Total Gastos:* {format_currency(total_gastos)}")
-            balance = total_ingresos - total_gastos
-            
+            if total_planilla > 0:
+                gastos_cuenta = total_gastos_neto - total_planilla
+                msg_lineas.append(f"💸 *Total Gastos:* {format_currency(total_gastos_neto)}")
+                msg_lineas.append(f"  ├─ 💳 *En cuenta/tarjetas:* {format_currency(gastos_cuenta)}")
+                msg_lineas.append(f"  └─ 🏢 *Por planilla:* {format_currency(total_planilla)}")
+                balance = total_ingresos - gastos_cuenta
+            else:
+                msg_lineas.append(f"💸 *Total Gastos:* {format_currency(total_gastos_neto)}")
+                balance = total_ingresos - total_gastos_neto
+
         if total_ingresos > 0:
             ahorro_pct = (balance / total_ingresos) * 100
             msg_lineas.append(f"⚖️ *Balance Neto en Cuenta:* {format_currency(balance)} ({ahorro_pct:.1f}% ahorrado)")
         else:
             msg_lineas.append(f"⚖️ *Balance Neto en Cuenta:* {format_currency(balance)}")
-        
-        # Generar gráfico solo para categorías con gasto positivo (ax.pie no admite valores negativos ni cero)
+
+        # Generar gráfico circular con Gasto Bruto consumido
         datos_grafico = [
             (cat, m, col)
             for cat, m, col in zip(categorias, montos, colores_usados)
             if m > 0
         ]
-        
+
+        reply_markup = {
+            "inline_keyboard": [
+                [{"text": "📊 Ver Gráfico de Barras (Neto)", "callback_data": f"chart_bar:{month_offset}"}]
+            ]
+        }
+
         try:
             if not datos_grafico:
-                await enviar_mensaje_telegram(chat_id, "\n".join(msg_lineas))
+                await enviar_mensaje_telegram(chat_id, "\n".join(msg_lineas), reply_markup=reply_markup)
                 return
-                
+
             from src.models import get_local_date
             hora_gen = get_local_date().strftime("%d/%m/%Y")
-            
+
             cat_graf = [d[0] for d in datos_grafico]
             montos_graf = [d[1] for d in datos_grafico]
             colores_graf = [d[2] for d in datos_grafico]
-            
+
             fig, ax = plt.subplots(figsize=(8, 6), subplot_kw=dict(aspect="equal"))
-            
+
             wedges, texts, autotexts = ax.pie(
-                montos_graf, autopct='%1.1f%%', textprops=dict(color="w", weight="bold"), 
+                montos_graf, autopct='%1.1f%%', textprops=dict(color="w", weight="bold"),
                 colors=colores_graf, startangle=140
             )
-            
+
             ax.legend(wedges, cat_graf, title="Categorías", loc="center left", bbox_to_anchor=(1, 0, 0.5, 1))
-            fig.suptitle(f"Gastos - Mes {t_month:02d}/{t_year}", fontsize=14, fontweight="bold", y=0.98)
+            fig.suptitle(f"Gastos Consumidos (Bruto) - Mes {t_month:02d}/{t_year}", fontsize=14, fontweight="bold", y=0.98)
             ax.set_title(f"Generado el: {hora_gen}", fontsize=10, color="gray", pad=15)
-            
+
             buf = io.BytesIO()
             plt.savefig(buf, format='png', bbox_inches="tight")
             buf.seek(0)
             plt.close(fig)
-            
-            await enviar_foto_telegram(chat_id, buf.getvalue(), caption="\n".join(msg_lineas))
+
+            await enviar_foto_telegram(chat_id, buf.getvalue(), caption="\n".join(msg_lineas), reply_markup=reply_markup)
         except Exception as e:
             logger.error(f"Error generando gráfico: {e}")
             # Fallback a texto
-            await enviar_mensaje_telegram(chat_id, "\n".join(msg_lineas))
-            
+            await enviar_mensaje_telegram(chat_id, "\n".join(msg_lineas), reply_markup=reply_markup)
+
         return
 
     if texto_limpio.startswith("/ultimas") or texto_limpio.startswith("últimas") or texto_limpio.startswith("ultimas"):
