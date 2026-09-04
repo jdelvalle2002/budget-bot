@@ -79,6 +79,8 @@ Para **producción**, yo conecté el repositorio a un *Web Service* en **Render*
 
 ## Próximas Mejoras (Roadmap / TODO)
 
+* [ ] **Control de Ritmo y Burn Rate Predictivo (`/ritmo`):** Alertas predictivas de velocidad de gasto en base a avance del calendario, días proyectados para agotamiento y margen seguro diario. Consultar [docs/proposals/burn_rate_predictivo.md](docs/proposals/burn_rate_predictivo.md).
+* [ ] **Optimizaciones UX a Presupuestos:** Actualización *in-place* (`editMessageText`), atajos rápidos (`/presupuesto cat monto`) y badges dinámicos. Consultar [docs/proposals/mejoras_presupuesto_y_ux_interactiva.md](docs/proposals/mejoras_presupuesto_y_ux_interactiva.md).
 * [ ] **Gastos Anualizados:** Implementar distribución diferida en cuotas virtuales para compras anuales (gimnasio, seguros, suscripciones anuales) para evitar distorsiones en los presupuestos mensuales de caja. Consultar [docs/proposals/gastos_anualizados_y_planilla.md](docs/proposals/gastos_anualizados_y_planilla.md).
 * [x] **Método de Pago `Planilla`:** Soporte para consumos descontados por planilla laboral (ej. casino de la empresa con credencial), contabilizándolos en el gasto real de alimentación pero excluyéndolos de la resta del balance bancario neto.
 
