@@ -190,7 +190,19 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
 
     texto_limpio = text.strip().lower()
     
-    comandos_sistema = ["/ayuda", "ayuda", "help", "/cancelar", "cancelar", "/buscar", "/ultimas", "últimas", "ultimas", "/resumen", "resumen", "/multi", "/start", "start", "hola", "buenas"]
+    comandos_sistema = [
+        "/ayuda", "ayuda", "help",
+        "/cancelar", "cancelar",
+        "/buscar",
+        "/ultimas", "últimas", "ultimas",
+        "/presupuesto", "presupuesto",
+        "/resumen", "resumen",
+        "/tendencias", "tendencias",
+        "/multi",
+        "/consulta",
+        "/start", "start",
+        "hola", "buenas"
+    ]
     is_command = any(texto_limpio.startswith(cmd) for cmd in comandos_sistema) or texto_limpio.startswith("?")
     
     if is_command or texto_limpio == "cancelar":
@@ -329,6 +341,7 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             "• _'Me pagaron 50 lucas que me debían'_\n\n"
             "O usa estos comandos avanzados:\n"
             "📊 `/resumen` : Ver tus gastos del mes (con desglose en cuenta/tarjetas vs. planilla).\n"
+            "🎯 `/presupuesto` : Ver el presupuesto mensual definido por categoría y el total.\n"
             "📈 `/tendencias` : Compara tus gastos de este mes (hasta hoy) con el mes pasado.\n"
             "⏪ `/resumen anterior` : Ver tus gastos del mes pasado.\n"
             "🕰️ `/ultimas` : Ver tus últimos 5 registros (te permite Editarlos o Borrarlos).\n"
@@ -390,6 +403,60 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             msg += "🏆 ¡Excelente! Ninguna categoría ha subido respecto al mes pasado.\n"
             
         await enviar_mensaje_telegram(chat_id, msg)
+        return
+
+    if texto_limpio in ["/presupuesto", "presupuesto", "mi presupuesto"] or texto_limpio.startswith("/presupuesto"):
+        await enviar_mensaje_telegram(chat_id, "⏳ Consultando tu presupuesto en la planilla...")
+        try:
+            category_config = sheets_client.load_categories_from_config(force_refresh=True) if sheets_client else {}
+        except Exception as e:
+            logger.error(f"Error cargando presupuesto desde Sheets: {e}")
+            await enviar_mensaje_telegram(chat_id, "❌ Hubo un error al consultar tu planilla de Google Sheets.")
+            return
+
+        if not category_config:
+            await enviar_mensaje_telegram(chat_id, "ℹ️ No se pudo cargar la configuración de categorías desde tu planilla.")
+            return
+
+        from decimal import Decimal
+
+        presupuestos = []
+        sin_presupuesto = []
+        total_presupuesto = Decimal(0)
+
+        for cat, datos in category_config.items():
+            presup = datos.get("presupuesto") if isinstance(datos, dict) else None
+            if presup is not None and presup > 0:
+                monto_dec = Decimal(str(presup))
+                presupuestos.append((cat, monto_dec))
+                total_presupuesto += monto_dec
+            else:
+                sin_presupuesto.append(cat)
+
+        if not presupuestos:
+            msg = (
+                "ℹ️ No tienes ningún presupuesto configurado en tu planilla.\n\n"
+                "💡 *Tip:* Entra a tu Google Sheets y agrega los montos en la columna *'Presupuesto'* "
+                "de la pestaña *'Config'* para que el bot controle tus límites mensuales."
+            )
+            await enviar_mensaje_telegram(chat_id, msg)
+            return
+
+        # Ordenar de mayor a menor presupuesto
+        presupuestos.sort(key=lambda x: x[1], reverse=True)
+
+        lineas = ["🎯 *Presupuesto Mensual Definido:*\n"]
+        for cat, monto in presupuestos:
+            pct = (monto / total_presupuesto) * Decimal(100) if total_presupuesto > 0 else Decimal(0)
+            lineas.append(f"• *{cat}:* {format_currency(monto)} ({pct:.1f}%)")
+
+        lineas.append("\n" + "─" * 25)
+        lineas.append(f"💰 *Total Presupuestado:* {format_currency(total_presupuesto)} / mes")
+
+        if sin_presupuesto:
+            lineas.append(f"\n💡 _Nota: Hay {len(sin_presupuesto)} categorías sin límite asignado en la pestaña 'Config'._")
+
+        await enviar_mensaje_telegram(chat_id, "\n".join(lineas))
         return
 
     if texto_limpio.startswith("/resumen") or texto_limpio.startswith("resumen"):
@@ -613,6 +680,7 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             "• _'? cuánto he gastado en casino este mes'_\n\n"
             "⚙️ *Comandos:*\n"
             "• `/resumen` - Resumen del mes y gráfico con desglose cuenta/planilla.\n"
+            "• `/presupuesto` - Límites de presupuesto definidos y total mensual.\n"
             "• `/buscar <texto>` - Busca registros por concepto o comentario.\n"
             "• `/ultimas` - Muestra los últimos 5 registros con opciones de edición.\n"
             "• `/multi` - Registra varios gastos a la vez.\n"
@@ -622,7 +690,7 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         return
 
     # Comandos Analíticos (NLQ)
-    if texto_limpio.startswith("/consulta ") or texto_limpio.startswith("? ") or texto_limpio.startswith("?"):
+    if texto_limpio.startswith("/consulta ") or texto_limpio == "/consulta" or texto_limpio.startswith("? ") or texto_limpio.startswith("?"):
         pregunta = text.replace("/consulta", "").lstrip("? ").strip()
         if not pregunta:
             await enviar_mensaje_telegram(chat_id, "ℹ️ Por favor escribe tu pregunta después de `/consulta` o `?`.\nEjemplo: `? cuánto gasté en comida la semana pasada`")
