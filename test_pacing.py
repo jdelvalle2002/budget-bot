@@ -105,6 +105,17 @@ def test_structural_categories_and_reimbursements():
     assert metric_struct.es_alerta is False  # No debe alertar como sobreconsumo diario
     print("  ✅ Categoría estructural identificada y no genera alerta falsa.")
 
+    # Telefonía cargada al 95% (gasto estructural similar a Cuentas Básicas)
+    metric_tel = compute_category_pacing(
+        categoria="Telefonía",
+        limite=Decimal("20000"),
+        gasto_neto=Decimal("19000"),
+        target_date=target,
+    )
+    assert metric_tel.es_estructural is True
+    assert metric_tel.es_alerta is False
+    print("  ✅ Telefonía identificada como estructural y no genera alerta falsa.")
+
     # Reembolso mayor al gasto (neto <= 0)
     metric_reimb = compute_category_pacing(
         categoria="Alimentación",

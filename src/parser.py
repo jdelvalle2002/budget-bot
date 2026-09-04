@@ -4,11 +4,11 @@ import logging
 import re
 import random
 from decimal import Decimal
-from datetime import date
+from datetime import date, datetime, timedelta
 from enum import Enum
 from collections import defaultdict
 import unicodedata
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
 
@@ -274,7 +274,13 @@ class FiltroTiempo(str, Enum):
     ESTE_MES = "este_mes"
     MES_PASADO = "mes_pasado"
     ESTE_AÑO = "este_año"
+    ESTA_SEMANA = "esta_semana"
+    ULTIMOS_7_DIAS = "ultimos_7_dias"
+    ULTIMOS_30_DIAS = "ultimos_30_dias"
+    HOY = "hoy"
+    AYER = "ayer"
     SIEMPRE = "siempre"
+    PERSONALIZADO = "personalizado"
 
 class IntentType(str, Enum):
     GASTO_TOTAL = "gasto_total"
@@ -282,69 +288,142 @@ class IntentType(str, Enum):
     DESGLOSE_CATEGORIA = "desglose_categoria"
     DESGLOSE_METODO = "desglose_metodo"
     BUSQUEDA_ESPECIFICA = "busqueda_especifica"
+    MAYOR_GASTO = "mayor_gasto"
+    CONTEO = "conteo"
 
 class AnalisisQuery(BaseModel):
-    intent: IntentType
-    filtro_tiempo: FiltroTiempo
-    categoria_objetivo: str | None = None
-    concepto_objetivo: str | None = None
+    intent: IntentType = Field(..., description="Intención analítica de la consulta")
+    filtro_tiempo: FiltroTiempo = Field(FiltroTiempo.ESTE_MES, description="Período temporal identificado")
+    fecha_desde: str | None = Field(None, description="Fecha de inicio calculada en formato YYYY-MM-DD")
+    fecha_hasta: str | None = Field(None, description="Fecha de fin calculada en formato YYYY-MM-DD")
+    periodo_legible: str = Field("este mes", description="Descripción en lenguaje natural del período analizado (ej: 'este mes', 'esta semana', 'en agosto')")
+    categoria_objetivo: str | None = Field(None, description="Categoría de presupuesto si la pregunta apunta a una (ej: 'Alimentación', 'Transporte', 'Salidas')")
+    metodo_objetivo: str | None = Field(None, description="Método de pago si la pregunta especifica uno (ej: 'Planilla', 'Débito', 'Crédito')")
+    terminos_busqueda: list[str] = Field(
+        default_factory=list,
+        description="Lista de sinónimos, lemas, sustantivos y verbos relacionados para buscar en conceptos/comentarios. Para 'almorzando'/'almorzar': ['almuerzo', 'almorzar', 'almorzando', 'casino', 'menu', 'colacion']. Para 'super': ['super', 'supermercado', 'lider', 'jumbo', 'tottus']. Para 'carrete': ['carrete', 'fiesta', 'bar', 'cerveza', 'copete']."
+    )
+    concepto_objetivo: str | None = Field(None, description="Término principal capitalizado para el título de la respuesta (ej: 'Almuerzo', 'Supermercado', 'Uber')")
 
-def filtrar_transacciones(transacciones: list[dict], filtro_tiempo: FiltroTiempo) -> list[dict]:
+def filtrar_transacciones(
+    transacciones: list[dict],
+    filtro_tiempo: FiltroTiempo,
+    fecha_desde: str | None = None,
+    fecha_hasta: str | None = None
+) -> list[dict]:
     hoy = get_local_date()
     filtradas = []
-    
+
+    f_desde = None
+    f_hasta = None
+    if fecha_desde:
+        try:
+            f_desde = date.fromisoformat(fecha_desde.split("T")[0])
+        except Exception:
+            f_desde = None
+    if fecha_hasta:
+        try:
+            f_hasta = date.fromisoformat(fecha_hasta.split("T")[0])
+        except Exception:
+            f_hasta = None
+
     for tx in transacciones:
-        # Extraer fecha
         fecha_str = tx.get('fecha', '')
         if not fecha_str:
             continue
-            
+
         try:
-            # Soportar formato iso o dia/mes/año según como esté en sheets
-            # Asumiremos ISO YYYY-MM-DD por defecto de nuestro propio parser
             if "T" in fecha_str:
                 fecha_tx = date.fromisoformat(fecha_str.split("T")[0])
             else:
                 fecha_tx = date.fromisoformat(fecha_str)
         except ValueError:
             continue
-            
-        if filtro_tiempo == FiltroTiempo.ESTE_MES:
-            if fecha_tx.year == hoy.year and fecha_tx.month == hoy.month:
-                filtradas.append(tx)
-        elif filtro_tiempo == FiltroTiempo.MES_PASADO:
-            mes_pasado = hoy.month - 1 if hoy.month > 1 else 12
-            año_pasado = hoy.year if hoy.month > 1 else hoy.year - 1
-            if fecha_tx.year == año_pasado and fecha_tx.month == mes_pasado:
-                filtradas.append(tx)
-        elif filtro_tiempo == FiltroTiempo.ESTE_AÑO:
-            if fecha_tx.year == hoy.year:
-                filtradas.append(tx)
-        else:
-            filtradas.append(tx)
-            
+
+        # Si vienen fechas explícitas calculadas por el modelo, tienen prioridad
+        if f_desde and fecha_tx < f_desde:
+            continue
+        if f_hasta and fecha_tx > f_hasta:
+            continue
+
+        # Filtros temporales estándar relativos
+        if not f_desde and not f_hasta:
+            if filtro_tiempo == FiltroTiempo.ESTE_MES:
+                if not (fecha_tx.year == hoy.year and fecha_tx.month == hoy.month):
+                    continue
+            elif filtro_tiempo == FiltroTiempo.MES_PASADO:
+                mes_pasado = hoy.month - 1 if hoy.month > 1 else 12
+                año_pasado = hoy.year if hoy.month > 1 else hoy.year - 1
+                if not (fecha_tx.year == año_pasado and fecha_tx.month == mes_pasado):
+                    continue
+            elif filtro_tiempo == FiltroTiempo.ESTE_AÑO:
+                if fecha_tx.year != hoy.year:
+                    continue
+            elif filtro_tiempo == FiltroTiempo.HOY:
+                if fecha_tx != hoy:
+                    continue
+            elif filtro_tiempo == FiltroTiempo.AYER:
+                if fecha_tx != hoy - timedelta(days=1):
+                    continue
+            elif filtro_tiempo == FiltroTiempo.ULTIMOS_7_DIAS:
+                if fecha_tx < hoy - timedelta(days=7):
+                    continue
+            elif filtro_tiempo == FiltroTiempo.ULTIMOS_30_DIAS:
+                if fecha_tx < hoy - timedelta(days=30):
+                    continue
+            elif filtro_tiempo == FiltroTiempo.ESTA_SEMANA:
+                lunes = hoy - timedelta(days=hoy.weekday())
+                if fecha_tx < lunes:
+                    continue
+
+        filtradas.append(tx)
+
     return filtradas
 
 def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
     """
-    Motor analítico determinista. Usa Gemini para clasificar la intención,
-    y Python para calcular el resultado riguroso matemáticamente.
+    Motor analítico semántico y determinista.
+    Usa Gemini para planificar la consulta con sinónimos, lemas y filtros temporales,
+    y Python para calcular el resultado riguroso matemáticamente sin alucinaciones numéricas.
     """
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         raise ValueError("La variable GEMINI_API_KEY no está configurada.")
-        
+
     client = genai.Client(api_key=api_key)
     hoy_date = get_local_date()
     hoy = hoy_date.isoformat()
-    
+
     prompt_router = f"""
-    Hoy es {hoy}. 
-    Clasifica la intención analítica del usuario sobre sus finanzas.
-    Si el usuario pregunta por un concepto o tienda específica (ej: "uber", "helado", "sushi", "supermercado"), 
-    clasifícalo como 'busqueda_especifica' y extrae ese término en 'concepto_objetivo'.
+    Hoy es {hoy} ({hoy_date.strftime('%A')}).
+    Eres el clasificador del motor analítico financiero de una persona en Chile.
+    Analiza la pregunta del usuario y extrae los parámetros de búsqueda con máxima flexibilidad semántica:
+
+    1. 'intent':
+       - 'busqueda_especifica': consultas sobre un concepto, actividad, comercio o ítem específico (ej: almuerzo, almorzando, uber, super, helado, sushi, bencina, cervezas).
+       - 'gasto_total': suma general o de una categoría completa sin concepto puntual (ej: 'cuánto gasté este mes', 'cuánto gasté en transporte').
+       - 'gasto_promedio': promedio por día o período (ej: 'cuánto gasto al día').
+       - 'desglose_categoria': desglose o ranking de gastos por categoría.
+       - 'desglose_metodo': desglose por método de pago (débito, crédito, planilla).
+       - 'mayor_gasto': el gasto más alto o compra más cara (ej: 'cuál fue mi gasto más caro', 'en qué gasté más').
+       - 'conteo': cantidad de veces o frecuencia (ej: 'cuántas veces pedí delivery', 'cuántas veces fui al cine').
+
+    2. Regla Crucial de Lematización en 'terminos_busqueda':
+       Para cualquier búsqueda de concepto o actividad, genera una lista exhaustiva de sinónimos, sustantivos y lemas:
+       - Si el usuario usa un verbo o gerundio (ej: 'almorzando', 'almorzar'), incluye ['almuerzo', 'almorzar', 'almorzando', 'casino', 'menu', 'colacion', 'lunch'].
+       - Si dice 'tomando', 'carreteando' o 'saliendo' -> ['carrete', 'bar', 'cerveza', 'copete', 'fiesta', 'junta'].
+       - Si dice 'viajando' o 'moviéndome' -> ['uber', 'didi', 'cabify', 'metro', 'bip', 'pasaje', 'viaje', 'taxi'].
+       - Si dice 'super' o 'comprando comida' -> ['super', 'supermercado', 'lider', 'jumbo', 'tottus', 'santa isabel', 'unimarc'].
+       - En 'concepto_objetivo', pon el sustantivo canónico en mayúscula inicial (ej: 'Almuerzo', 'Uber', 'Supermercado', 'Bencina').
+
+    3. Rango de Fechas:
+       - Calcula 'fecha_desde' y 'fecha_hasta' relativas a hoy ({hoy}).
+       - 'esta semana': lunes de esta semana ({ (hoy_date - timedelta(days=hoy_date.weekday())).isoformat() }) hasta hoy.
+       - 'este mes': desde {hoy_date.strftime('%Y-%m-01')} hasta hoy.
+       - 'mes pasado': primer y último día del mes pasado.
+       - 'periodo_legible': ej. 'este mes', 'esta semana', 'los últimos 7 días', 'en agosto'.
     """
-    
+
     try:
         chat = client.chats.create(
             model='gemini-flash-lite-latest',
@@ -357,49 +436,188 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
         )
         response = chat.send_message(pregunta)
         query_data = json.loads(response.text)
-        intent = query_data.get("intent")
-        filtro_tiempo = FiltroTiempo(query_data.get("filtro_tiempo", "este_mes"))
+        
+        intent_str = query_data.get("intent")
+        try:
+            intent = IntentType(intent_str)
+        except ValueError:
+            intent = IntentType.BUSQUEDA_ESPECIFICA
+
+        filtro_tiempo_str = query_data.get("filtro_tiempo", "este_mes")
+        try:
+            filtro_tiempo = FiltroTiempo(filtro_tiempo_str)
+        except ValueError:
+            filtro_tiempo = FiltroTiempo.ESTE_MES
+
+        fecha_desde = query_data.get("fecha_desde")
+        fecha_hasta = query_data.get("fecha_hasta")
+        periodo_desc = query_data.get("periodo_legible") or filtro_tiempo.value.replace('_', ' ')
         categoria_obj = query_data.get("categoria_objetivo")
-        concepto_objetivo = query_data.get("concepto_objetivo")
-        
-        txs_filtradas = filtrar_transacciones(transacciones, filtro_tiempo)
-        
-        # Helper para el neteo
+        metodo_obj = query_data.get("metodo_objetivo")
+        concepto_obj = query_data.get("concepto_objetivo")
+        terminos_busqueda = query_data.get("terminos_busqueda") or []
+
+        # 1. Filtrado temporal
+        txs_filtradas = filtrar_transacciones(
+            transacciones,
+            filtro_tiempo=filtro_tiempo,
+            fecha_desde=fecha_desde,
+            fecha_hasta=fecha_hasta
+        )
+
+        # 2. Normalización de términos de búsqueda
+        terminos_norm = []
+        for t in terminos_busqueda:
+            if t and isinstance(t, str) and t.strip():
+                tn = quitar_acentos(t.strip().lower())
+                if tn not in terminos_norm:
+                    terminos_norm.append(tn)
+        if concepto_obj:
+            cn = quitar_acentos(concepto_obj.strip().lower())
+            if cn and cn not in terminos_norm:
+                terminos_norm.append(cn)
+
+        # Helper para el neteo matemático
         categorias_ingreso = ["Remuneraciones", "Otros Ingresos", "Inversiones"]
-        
+
         def get_monto_neto(tx) -> Decimal:
-            m = Decimal(str(tx.get('monto', 0)).replace(',','').replace('$',''))
+            m = Decimal(str(tx.get('monto', 0)).replace(',', '').replace('$', ''))
             tipo = str(tx.get('tipo', '')).lower()
             cat = str(tx.get('categoria', ''))
             is_ingreso_nativo = cat in categorias_ingreso
-            
+
             if tipo == "gasto":
                 return -m if is_ingreso_nativo else m
             elif tipo == "ingreso":
                 return m if is_ingreso_nativo else -m
             return m
 
-        # Filtramos por categoría si viene explícita (para Totales y Promedios)
-        analisis_txs = txs_filtradas
-        if categoria_obj and intent in [IntentType.GASTO_TOTAL, IntentType.GASTO_PROMEDIO]:
-            cat_obj_norm = quitar_acentos(categoria_obj.lower())
-            analisis_txs = [tx for tx in analisis_txs if cat_obj_norm in quitar_acentos(tx.get('categoria', '').lower())]
-        elif intent in [IntentType.GASTO_TOTAL, IntentType.GASTO_PROMEDIO, IntentType.DESGLOSE_METODO, IntentType.DESGLOSE_CATEGORIA]:
-            # Por defecto excluimos ingresos nativos para ver el neto de "gastos"
-            analisis_txs = [tx for tx in analisis_txs if tx.get('categoria', '') not in categorias_ingreso]
+        # 3. Predicado de coincidencia flexible
+        def match_tx(tx: dict) -> bool:
+            # Filtro por método de pago si fue solicitado
+            if metodo_obj:
+                m_tx = quitar_acentos(str(tx.get('metodo', '')).lower())
+                m_req = quitar_acentos(metodo_obj.lower())
+                if m_req not in m_tx:
+                    return False
+
+            # Filtro por categoría estricta solo si NO hay términos de búsqueda semánticos
+            cat_tx = quitar_acentos(str(tx.get('categoria', '')).lower())
+            if categoria_obj and not terminos_norm:
+                cat_req = quitar_acentos(categoria_obj.lower())
+                if cat_req not in cat_tx:
+                    return False
+
+            # Filtro semántico por lemas, sinónimos o conceptos
+            if terminos_norm:
+                concepto_tx = quitar_acentos(str(tx.get('concepto', '')).lower())
+                com_tx = quitar_acentos(str(tx.get('comentarios', '')).lower())
+                texto_combinado = f"{concepto_tx} {cat_tx} {com_tx}"
+
+                matched = False
+                for t in terminos_norm:
+                    if t in texto_combinado:
+                        matched = True
+                        break
+                    # Coincidencia flexible de raíz de palabras (prefijos >= 4 caracteres)
+                    palabras = concepto_tx.split() + com_tx.split()
+                    for p in palabras:
+                        if len(t) >= 4 and len(p) >= 4:
+                            if p.startswith(t[:4]) or t.startswith(p[:4]):
+                                matched = True
+                                break
+                    if matched:
+                        break
+                if not matched:
+                    return False
+
+            return True
+
+        analisis_txs = [tx for tx in txs_filtradas if match_tx(tx)]
 
         respuesta_final = ""
-        
-        if intent == IntentType.GASTO_TOTAL:
+
+        # --- RAMA 1: MAYOR GASTO ---
+        if intent == IntentType.MAYOR_GASTO:
+            gastos = [tx for tx in analisis_txs if str(tx.get('tipo', '')).lower() == 'gasto' and get_monto_neto(tx) > 0]
+            if not gastos:
+                respuesta_final = f"ℹ️ No encontré registros de gastos en el período indicado ({periodo_desc})."
+            else:
+                top_gastos = sorted(gastos, key=lambda x: get_monto_neto(x), reverse=True)[:3]
+                mayor = top_gastos[0]
+                m_txt = f" por {mayor.get('metodo')}" if mayor.get('metodo') else ""
+                respuesta_final = (
+                    f"🏆 **Mayor Gasto ({periodo_desc}):**\n"
+                    f"• {str(mayor.get('fecha', '')).split('T')[0]}: **{format_currency(get_monto_neto(mayor))}** en *{mayor.get('concepto', '')}* "
+                    f"({mayor.get('categoria', '')}{m_txt})\n"
+                )
+                if len(top_gastos) > 1:
+                    respuesta_final += "\nOtros gastos significativos:\n"
+                    for g in top_gastos[1:]:
+                        f_str = str(g.get('fecha', '')).split('T')[0]
+                        met_str = f" - {g.get('metodo')}" if g.get('metodo') else ""
+                        respuesta_final += f"• {f_str}: {format_currency(get_monto_neto(g))} ({g.get('concepto', '')}{met_str})\n"
+
+        # --- RAMA 2: CONTEO O FRECUENCIA ---
+        elif intent == IntentType.CONTEO:
+            veces = len(analisis_txs)
             total = sum(get_monto_neto(tx) for tx in analisis_txs)
+            titulo = concepto_obj or categoria_obj or (terminos_busqueda[0] if terminos_busqueda else "esto")
+            if veces == 0:
+                respuesta_final = f"🔎 No registraste transacciones de '{titulo}' ({periodo_desc})."
+            else:
+                prom_str = f" (promedio de {format_currency(total / Decimal(veces))} por vez)" if veces > 1 else ""
+                respuesta_final = (
+                    f"🔢 **Frecuencia de '{titulo.capitalize()}' ({periodo_desc}):**\n"
+                    f"Has registrado esto **{veces} veces**, sumando un total de **{format_currency(total)}**{prom_str}."
+                )
+
+        # --- RAMA 3: BÚSQUEDA ESPECÍFICA DE CONCEPTO / COMERCIO ---
+        elif intent == IntentType.BUSQUEDA_ESPECIFICA or terminos_norm:
+            veces = len(analisis_txs)
+            total = sum(get_monto_neto(tx) for tx in analisis_txs)
+            titulo = concepto_obj or (categoria_obj if categoria_obj else (terminos_busqueda[0] if terminos_busqueda else "Búsqueda"))
+
+            if veces == 0:
+                respuesta_final = f"🔎 No encontré gastos relacionados a '{titulo}' ({periodo_desc})."
+            else:
+                prom_str = f" (promedio de {format_currency(total / Decimal(veces))} por vez)" if veces > 1 else ""
+                respuesta_final = (
+                    f"🔎 **Búsqueda: '{titulo.capitalize()}' ({periodo_desc})**\n"
+                    f"Has registrado gastos en esto **{veces} veces**, sumando un total de **{format_currency(total)}**{prom_str}."
+                )
+
+                ultimos = sorted(analisis_txs, key=lambda x: str(x.get('fecha', '')), reverse=True)[:5]
+                if ultimos:
+                    respuesta_final += "\n\nÚltimos registros:\n"
+                    for tx in ultimos:
+                        fecha = str(tx.get('fecha', '')).split('T')[0]
+                        monto_tx = get_monto_neto(tx)
+                        metodo_str = f" - {tx.get('metodo')}" if tx.get('metodo') else ""
+                        respuesta_final += f"• {fecha}: {format_currency(monto_tx)} ({tx.get('concepto', '')}{metodo_str})\n"
+
+        # --- RAMA 4: GASTO TOTAL ---
+        elif intent == IntentType.GASTO_TOTAL:
+            # Excluir ingresos nativos por defecto
+            gastos_puros = [tx for tx in analisis_txs if tx.get('categoria', '') not in categorias_ingreso]
+            total = sum(get_monto_neto(tx) for tx in gastos_puros)
             cat_str = f" en {categoria_obj}" if categoria_obj else ""
-            respuesta_final = f"📊 Tu gasto total{cat_str} ({filtro_tiempo.value.replace('_', ' ')}) es de **{format_currency(total)}**."
-            
+            met_str = f" con {metodo_obj}" if metodo_obj else ""
+            respuesta_final = f"📊 Tu gasto total{cat_str}{met_str} ({periodo_desc}) es de **{format_currency(total)}** ({len(gastos_puros)} transacciones)."
+
+        # --- RAMA 5: GASTO PROMEDIO ---
         elif intent == IntentType.GASTO_PROMEDIO:
-            total = sum(get_monto_neto(tx) for tx in analisis_txs)
+            gastos_puros = [tx for tx in analisis_txs if tx.get('categoria', '') not in categorias_ingreso]
+            total = sum(get_monto_neto(tx) for tx in gastos_puros)
+            
             import calendar
             dias = 1
-            if filtro_tiempo == FiltroTiempo.ESTE_MES:
+            if fecha_desde and fecha_hasta:
+                try:
+                    dias = max(1, (date.fromisoformat(fecha_hasta) - date.fromisoformat(fecha_desde)).days + 1)
+                except Exception:
+                    dias = hoy_date.day
+            elif filtro_tiempo == FiltroTiempo.ESTE_MES:
                 dias = hoy_date.day
             elif filtro_tiempo == FiltroTiempo.MES_PASADO:
                 mes_pasado = hoy_date.month - 1 if hoy_date.month > 1 else 12
@@ -407,36 +625,30 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
                 dias = calendar.monthrange(año_pasado, mes_pasado)[1]
             elif filtro_tiempo == FiltroTiempo.ESTE_AÑO:
                 dias = (hoy_date - date(hoy_date.year, 1, 1)).days + 1
-            elif filtro_tiempo == FiltroTiempo.SIEMPRE:
-                if analisis_txs:
-                    fechas_validas = []
-                    for tx in analisis_txs:
-                        try:
-                            f = tx.get('fecha', '').split("T")[0]
-                            fechas_validas.append(date.fromisoformat(f))
-                        except: pass
-                    if fechas_validas:
-                        primera = min(fechas_validas)
-                        dias = (hoy_date - primera).days + 1
-                dias = max(1, dias)
-                
+            elif filtro_tiempo in [FiltroTiempo.ESTA_SEMANA, FiltroTiempo.ULTIMOS_7_DIAS]:
+                dias = 7
+            else:
+                dias = max(1, hoy_date.day)
+
             promedio = total / Decimal(dias)
             cat_str = f" en {categoria_obj}" if categoria_obj else ""
-            respuesta_final = f"📉 **Promedio Diario{cat_str} ({filtro_tiempo.value.replace('_', ' ')}):**\nHas gastado una media de **{format_currency(promedio)} al día**."
-            
+            respuesta_final = f"📉 **Promedio Diario{cat_str} ({periodo_desc}):**\nHas gastado una media de **{format_currency(promedio)} al día** ({dias} días analizados)."
+
+        # --- RAMA 6: DESGLOSE POR MÉTODO ---
         elif intent == IntentType.DESGLOSE_METODO:
             desglose = defaultdict(Decimal)
             for tx in analisis_txs:
                 metodo = tx.get('metodo', 'Desconocido')
                 desglose[metodo] += get_monto_neto(tx)
-            
-            respuesta_final = f"💳 **Desglose por Método de Pago ({filtro_tiempo.value.replace('_', ' ')}):**\n"
+
+            respuesta_final = f"💳 **Desglose por Método de Pago ({periodo_desc}):**\n"
             total = Decimal(0)
             for m, monto in sorted(desglose.items(), key=lambda x: x[1], reverse=True):
                 respuesta_final += f"• {m}: {format_currency(monto)}\n"
                 total += monto
             respuesta_final += f"\n**Total:** {format_currency(total)}"
-            
+
+        # --- RAMA 7: DESGLOSE POR CATEGORÍA ---
         elif intent == IntentType.DESGLOSE_CATEGORIA:
             desglose = defaultdict(Decimal)
             cat_obj_norm = quitar_acentos(categoria_obj.lower()) if categoria_obj else ""
@@ -445,51 +657,26 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
                 if cat_obj_norm and cat_obj_norm not in quitar_acentos(cat.lower()):
                     continue
                 desglose[cat] += get_monto_neto(tx)
-            
-            respuesta_final = f"📁 **Desglose por Categoría ({filtro_tiempo.value.replace('_', ' ')}):**\n"
+
+            respuesta_final = f"📁 **Desglose por Categoría ({periodo_desc}):**\n"
             total = Decimal(0)
             for c, monto in sorted(desglose.items(), key=lambda x: x[1], reverse=True):
+                pct = (monto / total * Decimal(100)) if total > 0 else Decimal(0)
                 respuesta_final += f"• {c}: {format_currency(monto)}\n"
                 total += monto
             respuesta_final += f"\n**Total analizado:** {format_currency(total)}"
-            
-            # OPINIÓN DE LA IA:
+
             if total > 0:
-                prompt_opinion = f"Acabo de calcular este gasto: {respuesta_final}. Dame 1 frase amable, amistosa y súper breve opinando sobre esta distribución de gastos. No des formato markdown."
-                chat_op = client.chats.create(model='gemini-flash-lite-latest')
-                opinion = chat_op.send_message(prompt_opinion)
-                respuesta_final += f"\n\n🤖 _{opinion.text.strip()}_"
-                
-        elif intent == IntentType.BUSQUEDA_ESPECIFICA and (concepto_objetivo or categoria_obj):
-            termino = concepto_objetivo if concepto_objetivo else categoria_obj
-            termino_norm = quitar_acentos(termino.lower())
-            
-            coincidencias = [
-                tx for tx in analisis_txs 
-                if termino_norm in quitar_acentos(str(tx.get('concepto', '')).lower())
-                or termino_norm in quitar_acentos(str(tx.get('categoria', '')).lower())
-                or termino_norm in quitar_acentos(str(tx.get('comentarios', '')).lower())
-            ]
-            
-            veces = len(coincidencias)
-            total = sum(get_monto_neto(tx) for tx in coincidencias)
-            
-            if veces == 0:
-                respuesta_final = f"🔎 No encontré gastos relacionados a '{termino}' ({filtro_tiempo.value.replace('_', ' ')})."
-            else:
-                respuesta_final = f"🔎 **Búsqueda: '{termino.capitalize()}' ({filtro_tiempo.value.replace('_', ' ')})**\n"
-                respuesta_final += f"Has registrado gastos en esto **{veces} veces**, sumando un total de **{format_currency(total)}**."
-                
-                ultimos_3 = sorted(coincidencias, key=lambda x: str(x.get('fecha', '')), reverse=True)[:3]
-                if ultimos_3:
-                    respuesta_final += "\n\nÚltimos registros:\n"
-                    for tx in ultimos_3:
-                        fecha = str(tx.get('fecha', '')).split('T')[0]
-                        monto_tx = get_monto_neto(tx)
-                        respuesta_final += f"• {fecha}: {format_currency(monto_tx)} ({tx.get('concepto', '')})\n"
-                        
-        else: # Fallback
-            respuesta_final = "🔎 Entendí tu consulta, pero por ahora soy mejor haciendo desgloses matemáticos (Categoría, Método o Total). ¡Prueba preguntarme por sumas específicas como 'cuánto he gastado en uber'!"
+                try:
+                    prompt_opinion = f"Acabo de calcular este gasto: {respuesta_final}. Dame 1 frase amable, amistosa y súper breve opinando sobre esta distribución de gastos. No des formato markdown."
+                    chat_op = client.chats.create(model='gemini-flash-lite-latest')
+                    opinion = chat_op.send_message(prompt_opinion)
+                    respuesta_final += f"\n\n🤖 _{opinion.text.strip()}_"
+                except Exception:
+                    pass
+
+        else:
+            respuesta_final = "🔎 Entendí tu consulta, pero no encontré suficientes registros coincidentes en tu historial. ¡Prueba preguntarme por sumas específicas como 'cuánto he gastado en uber' o 'cuánto gasté en almuerzo'!"
 
         return respuesta_final
         

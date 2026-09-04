@@ -15,7 +15,7 @@ from src.models import format_currency, get_local_date
 # Categorías típicamente fijas o estructurales (donde el gasto suele cargarse en un solo pago mensual)
 CATEGORIAS_ESTRUCTURALES = {
     "Ahorro", "Inversiones", "Salud", "Cuentas Básicas", "Educación",
-    "Remuneraciones", "Otros Ingresos", "Hogar"
+    "Remuneraciones", "Otros Ingresos", "Hogar", "Telefonía"
 }
 
 @dataclass

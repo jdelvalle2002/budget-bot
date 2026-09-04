@@ -272,7 +272,7 @@ async def finalizar_guardado_transaccion(chat_id: str, session, tx: Transaction,
             if promedio > 0 and acumulado > promedio * 1.5:
                 es_anomalo = True
                 
-            is_strict = tx.categoria not in ["Ahorro", "Inversiones", "Salud", "Cuentas Básicas", "Educación", "Remuneraciones", "Otros Ingresos"]
+            is_strict = tx.categoria not in ["Ahorro", "Inversiones", "Salud", "Cuentas Básicas", "Educación", "Remuneraciones", "Otros Ingresos", "Hogar", "Telefonía"]
             if is_strict:
                 cat_config = sheets_client.load_categories_from_config().get(tx.categoria, {})
                 presupuesto = cat_config.get("presupuesto") if isinstance(cat_config, dict) else None
@@ -870,7 +870,7 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
                 else:
                     if presupuesto and presupuesto > 0:
                         pct = (neto / presupuesto) * 100
-                        is_strict = cat not in ["Ahorro", "Inversiones", "Salud", "Cuentas Básicas", "Educación", "Remuneraciones", "Otros Ingresos", "Hogar"]
+                        is_strict = cat not in ["Ahorro", "Inversiones", "Salud", "Cuentas Básicas", "Educación", "Remuneraciones", "Otros Ingresos", "Hogar", "Telefonía"]
 
                         if pct > 100:
                             alert = "🔴 EXCEDIDO" if is_strict else "🔵 Completado"

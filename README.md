@@ -65,7 +65,7 @@ Esto creará la hoja del año actual, una pestaña `Config` y agregará validaci
 **💡 Tip - Presupuestos Mensuales:** 
 En la pestaña `Config`, la columna C se llama "Presupuesto". Si quieres que el bot controle tus gastos, ingresa un límite numérico ahí (ej: `200000`).
 - En el comando `/resumen`, las categorías con presupuesto mostrarán una barra de progreso.
-- Al ingresar gastos en categorías estrictas (ej. Salidas, Telefonía, etc), la IA te avisará o se pondrá pesado si te pasas de tu presupuesto.
+- Al ingresar gastos en categorías estrictas (ej. Salidas, Alimentación, etc), la IA te avisará o se pondrá pesado si te pasas de tu presupuesto.
 
 ### 3. Ejecutar y Desplegar
 Localmente puedes probarlo con:
