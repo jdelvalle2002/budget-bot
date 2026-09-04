@@ -31,13 +31,55 @@ class ParseResult(BaseModel):
     transaction: Transaction
     es_ambiguo: bool
     opciones_categoria: list[str]
+    es_ambiguo_metodo: bool = False
+    opciones_metodo: list[str] = []
 
 def try_fast_path(text: str, message_id: str) -> ParseResult | None:
     """
     Intenta parsear mensajes simples con Regex para evitar llamar al LLM.
-    Ejemplo válido: "15000 uber", "2500 lider"
+    Ejemplos válidos:
+    - "15000 uber", "2500 lider"
+    - "3500 almuerzo menu casino pega", "almuerzo casino pega 4000", "3500 casino pega"
+    - "3500 por planilla", "almuerzo por planilla 3500"
     """
-    match = re.match(r'^\s*(?P<monto>\d+)\s+(?P<concepto>.+)\s*$', text.lower())
+    text_clean = text.lower().strip()
+    
+    # 1. Fast-path para almuerzos / casino de trabajo descontados por planilla
+    patrones_casino_almuerzo = [
+        r'casino\s+(?:de\s+la\s+)?pega',
+        r'casino\s+(?:del?\s+)?trabajo',
+        r'(?:almuerzo|menu|menú|colaci[oó]n)\s+(?:de\s+la\s+)?pega',
+        r'(?:almuerzo|menu|menú|colaci[oó]n)\s+(?:por|en)\s+planilla',
+        r'casino\s+(?:por|en)\s+planilla',
+        r'(?:marqu[eé]\s+)?credencial\s+casino',
+    ]
+    es_casino_almuerzo = any(re.search(p, text_clean) for p in patrones_casino_almuerzo)
+    tiene_otro_metodo = any(m in text_clean for m in ["debito", "débito", "credito", "crédito", "efectivo", "transferencia"])
+    
+    if es_casino_almuerzo and not tiene_otro_metodo:
+        monto_match = re.search(r'\b(?P<monto>\d{3,8})\b', text_clean)
+        if monto_match:
+            monto_str = monto_match.group('monto')
+            tx = Transaction(
+                id_transaccion=message_id,
+                fecha=get_local_date(),
+                tipo=TipoTransaccion.GASTO,
+                monto=Decimal(monto_str),
+                concepto="Almuerzo Casino",
+                categoria="Alimentación",
+                metodo=MetodoPago.PLANILLA,
+                comentarios="Procesado por Fast-Path (Planilla)"
+            )
+            return ParseResult(
+                transaction=tx,
+                es_ambiguo=False,
+                opciones_categoria=[],
+                es_ambiguo_metodo=False,
+                opciones_metodo=[]
+            )
+
+    # 2. Fast-path estándar para concepto + monto o monto + concepto
+    match = re.match(r'^\s*(?P<monto>\d+)\s+(?P<concepto>.+)\s*$', text_clean)
     if match:
         monto_str = match.group('monto')
         concepto_str = match.group('concepto').strip()
@@ -55,7 +97,13 @@ def try_fast_path(text: str, message_id: str) -> ParseResult | None:
                     metodo=MetodoPago.DEBITO,
                     comentarios="Procesado por Fast-Path (Regex)"
                 )
-                return ParseResult(transaction=tx, es_ambiguo=False, opciones_categoria=[])
+                return ParseResult(
+                    transaction=tx,
+                    es_ambiguo=False,
+                    opciones_categoria=[],
+                    es_ambiguo_metodo=False,
+                    opciones_metodo=[]
+                )
     return None
 
 def get_system_prompt(categorias_disponibles: list[str]) -> str:
@@ -72,13 +120,23 @@ Reglas de negocio:
 1. 'es_transaccion': Evalúa si el texto relata un gasto o ingreso REAL Y PROPIO del usuario. Si es una historia sobre otra persona (ej. "mi amigo gastó...", "él me contó..."), una conversación general, o spam, marca esto como false.
 2. 'monto': Debe ser un número entero o decimal positivo. Infiere la magnitud correcta según el contexto. Si es un reembolso, el monto sigue siendo positivo pero el tipo cambia.
 3. 'tipo': Debe ser estrictamente "Ingreso" o "Gasto". (Si fue un Egreso, es gasto. Si dice "me pagaron", "sueldo", "reembolso", "devolución", es Ingreso).
-4. 'concepto': Breve resumen de la transacción en 1 o 2 palabras (ej. "Uber", "Cerveza", "Sueldo", "Deuda Pedro").
+4. 'concepto': Breve resumen de la transacción en 1 o 2 palabras (ej. "Uber", "Cerveza", "Sueldo", "Almuerzo Casino", "Taller Pádel").
 5. 'categoria': DEBE ser EXACTAMENTE una de las siguientes opciones textuales: {categorias_disponibles}.
-6. 'metodo': Debe ser "Débito", "Crédito", "Efectivo", "Transferencia", o "Otro". Si no menciona, asume "Débito".
+   - Determina la categoría según la naturaleza de la actividad o producto consumido (ej. comida o casino -> 'Alimentación', deportes o pádel o gimnasio -> 'Deportes', consultas o farmacia -> 'Salud', pasajes o viajes -> 'Transporte').
+   - OJO: NUNCA fuerces 'Alimentación' solo porque el método sea 'Planilla'. La categoría depende del bien o servicio adquirido.
+6. 'metodo': Debe ser "Débito", "Crédito", "Efectivo", "Transferencia", "Planilla", o "Otro".
+   - Por defecto, si el usuario no menciona método de pago en compras cotidianas, asume "Débito".
+   - METODO 'PLANILLA': Representa cualquier gasto o beneficio descontado directamente por liquidación de sueldo laboral.
+     * Puede aplicar a cualquier categoría: casino laboral ('Alimentación'), talleres deportivos o gimnasio de la empresa ('Deportes'), seguro de salud complementario ('Salud'), etc.
+     * Si el mensaje indica explícitamente descuento por planilla, marcar credencial, o casino de la pega/trabajo (ej. "por planilla", "descuento por planilla", "marqué credencial", "casino pega", "casino de la pega", "casino del trabajo"), asigna metodo="Planilla" y 'es_ambiguo_metodo'=false.
+     * Si el mensaje indica explícitamente otro medio de pago (ej. "almorcé en el casino con débito", "pagué con crédito"), asigna ese método y 'es_ambiguo_metodo'=false.
+     * AMBIGÜEDAD DÉBITO VS PLANILLA: Si el usuario menciona un consumo en el casino laboral pero NO aclara si lo pagó con débito o por planilla (ej. "3500 almuerzo casino", "4000 en el casino", "almorcé en el casino"), debes marcar 'es_ambiguo_metodo'=true, 'opciones_metodo'=["Planilla", "Débito"], y en 'metodo' pon "Planilla" por defecto.
 7. 'fecha': Deduce la fecha exacta en formato YYYY-MM-DD. Si no hay referencia, asume {hoy}. Debes tener cuidado, la compra puede aludir al futuro pero haber ocurrido en el presente o pasado. Por ejemplo puedo comprar algo hoy para una actividad de la próxima semana.
 8. 'comentarios': Opcional, guarda notas extra para entender el movimiento al revisar los datos.
 9. 'es_ambiguo': Si el gasto puede encajar razonablemente en dos o más categorías distintas (por ejemplo, "4 lucas de helado" o "10k cervezas" pueden ser 'Alimentación' o 'Salidas', "regalo" puede ser 'Otros Gastos' o 'Mesada', "15k uber al estadio" puede ser 'Transporte' o 'Salidas'), debes marcar esto como true.
 10. 'opciones_categoria': Si marcaste 'es_ambiguo' como true, debes enviar un arreglo con las 2 opciones de categoría más probables sacadas estrictamente de {categorias_disponibles}. Si es_ambiguo es false, devuelve un arreglo vacío.
+11. 'es_ambiguo_metodo': true si hay duda sobre si el pago fue por 'Planilla' o 'Débito' (según la regla 6). En caso contrario, false.
+12. 'opciones_metodo': Si 'es_ambiguo_metodo' es true, debe ser estrictamente ["Planilla", "Débito"]. Si es false, devuelve un arreglo vacío.
 """
 
 class TransactionExtraction(BaseModel):
@@ -93,6 +151,8 @@ class TransactionExtraction(BaseModel):
     comentarios: str | None = ""
     es_ambiguo: bool = False
     opciones_categoria: list[str] = []
+    es_ambiguo_metodo: bool = False
+    opciones_metodo: list[str] = []
 
 class MultiTransactionExtraction(BaseModel):
     """Esquema para extraer múltiples transacciones."""
@@ -146,6 +206,8 @@ def parse_transaction_message(text: str, message_id: str, categorias_disponibles
         
         es_ambiguo = extracted_data.pop("es_ambiguo", False)
         opciones_categoria = extracted_data.pop("opciones_categoria", [])
+        es_ambiguo_metodo = extracted_data.pop("es_ambiguo_metodo", False)
+        opciones_metodo = extracted_data.pop("opciones_metodo", [])
         
         fecha_str = extracted_data.pop("fecha", None)
         fecha_tx = get_local_date()
@@ -164,7 +226,13 @@ def parse_transaction_message(text: str, message_id: str, categorias_disponibles
             **extracted_data
         )
         
-        return ParseResult(transaction=tx, es_ambiguo=es_ambiguo, opciones_categoria=opciones_categoria)
+        return ParseResult(
+            transaction=tx,
+            es_ambiguo=es_ambiguo,
+            opciones_categoria=opciones_categoria,
+            es_ambiguo_metodo=es_ambiguo_metodo,
+            opciones_metodo=opciones_metodo
+        )
 
     except ValueError as ve:
         # Errores lanzados manualmente (ej. 'es_transaccion' == False o JSONDecodeError convertido)
@@ -582,6 +650,8 @@ def parse_multi_transaction_message(text: str, base_message_id: str, categorias_
             _ = tx_data.pop("es_transaccion", True) # Ignoramos validaciones individuales
             _ = tx_data.pop("es_ambiguo", False)
             _ = tx_data.pop("opciones_categoria", [])
+            _ = tx_data.pop("es_ambiguo_metodo", False)
+            _ = tx_data.pop("opciones_metodo", [])
             
             fecha_str = tx_data.pop("fecha", None)
             fecha_tx = get_local_date()

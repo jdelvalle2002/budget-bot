@@ -164,6 +164,33 @@ def setup_sheet(sheet_id: str):
             }
         }
     })
+
+    # Configurar Data Validation para Metodo (Columna G -> Index 6)
+    batch_requests.append({
+        "setDataValidation": {
+            "range": {
+                "sheetId": year_sheet_id,
+                "startRowIndex": 1,
+                "startColumnIndex": 6, # G
+                "endColumnIndex": 7
+            },
+            "rule": {
+                "condition": {
+                    "type": "ONE_OF_LIST",
+                    "values": [
+                        {"userEnteredValue": "Débito"},
+                        {"userEnteredValue": "Crédito"},
+                        {"userEnteredValue": "Efectivo"},
+                        {"userEnteredValue": "Transferencia"},
+                        {"userEnteredValue": "Planilla"},
+                        {"userEnteredValue": "Otro"}
+                    ]
+                },
+                "showCustomUi": True,
+                "strict": False
+            }
+        }
+    })
     
     if batch_requests:
         service.spreadsheets().batchUpdate(

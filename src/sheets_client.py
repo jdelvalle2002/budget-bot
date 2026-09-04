@@ -328,16 +328,22 @@ class GoogleSheetsClient:
                                 
                         try:
                             monto = float(monto_str)
+                            metodo = str(row[6]).strip().capitalize() if len(row) > 6 else ""
                             if categoria not in resumen:
-                                resumen[categoria] = {"total": 0, "count": 0}
+                                resumen[categoria] = {"total": 0, "count": 0, "planilla": 0}
+                            elif "planilla" not in resumen[categoria]:
+                                resumen[categoria]["planilla"] = 0
                             
                             is_ingreso_nativo = categoria in categorias_ingreso
+                            es_planilla = (metodo == "Planilla")
                             
                             if tipo.lower() == "gasto":
                                 if is_ingreso_nativo:
                                     resumen[categoria]["total"] -= monto # Gasto en categoría de ingreso resta
                                 else:
                                     resumen[categoria]["total"] += monto # Gasto en categoría de gasto suma
+                                    if es_planilla:
+                                        resumen[categoria]["planilla"] += monto
                                 resumen[categoria]["count"] += 1
                                 
                             elif tipo.lower() == "ingreso":

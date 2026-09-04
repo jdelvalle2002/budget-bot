@@ -5,6 +5,7 @@ from src.models import Transaction
 class UserState(str, Enum):
     IDLE = "IDLE"
     AWAITING_CONFIRMATION = "AWAITING_CONFIRMATION"
+    AWAITING_METHOD_CONFIRMATION = "AWAITING_METHOD_CONFIRMATION"
     AWAITING_EDIT = "AWAITING_EDIT"
 
 class ConversationState:

@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from src.parser import parse_transaction_message
 from src.sheets_client import GoogleSheetsClient
 from src.state import get_user_session, UserState
-from src.models import format_currency
+from src.models import format_currency, Transaction, MetodoPago
 
 # Cargar variables de entorno
 load_dotenv()
@@ -62,6 +62,84 @@ async def enviar_foto_telegram(chat_id: str, photo_bytes: bytes, caption: str = 
         except Exception as e:
             logger.error(f"Error enviando foto a Telegram: {e}")
 
+async def finalizar_guardado_transaccion(chat_id: str, session, tx: Transaction, es_edicion: bool = False):
+    """Guarda o actualiza la transacción confirmada, calcula alertas y envía feedback al usuario."""
+    if es_edicion and session.edit_transaction_id:
+        tx.id_transaccion = session.edit_transaction_id
+        success = sheets_client.update_transaction(tx)
+        msg_exito = (
+            f"✅ *Registro Actualizado Exitosamente:*\n"
+            f"- *Monto:* {format_currency(tx.monto)}\n"
+            f"- *Categoría:* {tx.categoria}\n"
+            f"- *Tipo:* {tx.tipo.value}\n"
+            f"- *Fecha:* {tx.fecha}\n"
+            f"- *Método:* {tx.metodo.value}\n"
+            f"- *Concepto:* {tx.concepto}"
+        )
+    else:
+        success = sheets_client.append_transaction(tx)
+        
+        # INYECCIÓN DE PRESUPUESTO (Solo para gastos nuevos y estrictos)
+        es_anomalo = False
+        estado_presupuesto = None
+        if str(tx.tipo.value).lower() == "gasto" and sheets_client:
+            resumen_mes, _, _ = sheets_client.get_month_summary(0)
+            acumulado = resumen_mes.get(tx.categoria, {}).get("total", 0)
+            
+            promedio = sheets_client.get_category_monthly_average(tx.categoria)
+            if promedio > 0 and acumulado > promedio * 1.5:
+                es_anomalo = True
+                
+            is_strict = tx.categoria not in ["Ahorro", "Inversiones", "Salud", "Cuentas Básicas", "Educación", "Remuneraciones", "Otros Ingresos"]
+            if is_strict:
+                cat_config = sheets_client.load_categories_from_config().get(tx.categoria, {})
+                presupuesto = cat_config.get("presupuesto") if isinstance(cat_config, dict) else None
+                
+                if presupuesto and presupuesto > 0:
+                    if acumulado > presupuesto:
+                        estado_presupuesto = f"Lleva gastado {format_currency(acumulado)} en el mes, y su límite es {format_currency(presupuesto)}. ¡Se excedió!"
+                    elif acumulado >= presupuesto * 0.8:
+                        estado_presupuesto = f"Lleva gastado {format_currency(acumulado)} en el mes, y su límite es {format_currency(presupuesto)}. ¡Está peligrosamente cerca!"
+        
+        from src.parser import generar_comentario_ironico
+        chiste = generar_comentario_ironico(
+            tx.monto, 
+            tx.concepto, 
+            tx.categoria,
+            estado_presupuesto=estado_presupuesto,
+            es_anomalo=es_anomalo
+        )
+        
+        msg_exito = (
+            f"✅ Registrado exitosamente:\n"
+            f"- *Monto:* {format_currency(tx.monto)}\n"
+            f"- *Categoría:* {tx.categoria}\n"
+            f"- *Método:* {tx.metodo.value}\n"
+            f"- *Tipo:* {tx.tipo.value}\n"
+            f"- *Fecha:* {tx.fecha}"
+        )
+        if chiste:
+            msg_exito += f"\n\n🤖 _{chiste}_"
+            
+    if success:
+        reply_markup = {
+            "inline_keyboard": [
+                [
+                    {"text": "✏️ Editar", "callback_data": f"edit:{tx.id_transaccion}"},
+                    {"text": "🗑️ Deshacer", "callback_data": f"delete:{tx.id_transaccion}"}
+                ]
+            ]
+        }
+        await enviar_mensaje_telegram(chat_id, msg_exito, reply_markup=reply_markup)
+    else:
+        await enviar_mensaje_telegram(chat_id, "❌ Error guardando en Google Sheets.")
+
+    # Limpiar estado
+    session.state = UserState.IDLE
+    session.pending_transaction = None
+    session.options = []
+    session.edit_transaction_id = None
+
 async def process_telegram_callback(chat_id: str, callback_data: str):
     """Maneja los clics en los botones Inline de Telegram"""
     session = get_user_session(int(chat_id))
@@ -87,6 +165,23 @@ async def process_telegram_callback(chat_id: str, callback_data: str):
         )
         await enviar_mensaje_telegram(chat_id, instrucciones)
 
+    elif callback_data.startswith("cat:"):
+        cat_elegida = callback_data.split(":", 1)[1]
+        if session.state == UserState.AWAITING_CONFIRMATION and session.pending_transaction:
+            session.pending_transaction.categoria = cat_elegida
+            es_edicion = bool(session.edit_transaction_id)
+            await finalizar_guardado_transaccion(chat_id, session, session.pending_transaction, es_edicion=es_edicion)
+
+    elif callback_data.startswith("metodo:"):
+        metodo_str = callback_data.split(":", 1)[1]
+        if session.state == UserState.AWAITING_METHOD_CONFIRMATION and session.pending_transaction:
+            try:
+                session.pending_transaction.metodo = MetodoPago(metodo_str)
+            except ValueError:
+                session.pending_transaction.metodo = MetodoPago.PLANILLA if metodo_str.lower() == "planilla" else MetodoPago.DEBITO
+            es_edicion = bool(session.edit_transaction_id)
+            await finalizar_guardado_transaccion(chat_id, session, session.pending_transaction, es_edicion=es_edicion)
+
 async def process_telegram_update(chat_id: str, text: str, message_id: str):
     """
     Lógica conversacional que se ejecuta en Background para no bloquear a Telegram.
@@ -111,7 +206,34 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             await enviar_mensaje_telegram(chat_id, "ℹ️ No había ninguna operación pendiente.")
             return
 
-    # --- FLUJO 1: ESPERANDO CONFIRMACIÓN DE CATEGORÍA ---
+    # --- FLUJO 1A: ESPERANDO CONFIRMACIÓN DE MÉTODO (PLANILLA VS DÉBITO) ---
+    if session.state == UserState.AWAITING_METHOD_CONFIRMATION:
+        metodo_elegido = None
+        texto_resp = texto_limpio.strip()
+        
+        if "planilla" in texto_resp or texto_resp == "1":
+            metodo_elegido = MetodoPago.PLANILLA
+        elif "debito" in texto_resp or "débito" in texto_resp or texto_resp == "2":
+            metodo_elegido = MetodoPago.DEBITO
+        else:
+            for op in session.options:
+                if op.lower() in texto_resp:
+                    metodo_elegido = MetodoPago(op)
+                    break
+                    
+        if metodo_elegido and session.pending_transaction:
+            session.pending_transaction.metodo = metodo_elegido
+            es_edicion = bool(session.edit_transaction_id)
+            await finalizar_guardado_transaccion(chat_id, session, session.pending_transaction, es_edicion=es_edicion)
+            return
+        else:
+            await enviar_mensaje_telegram(chat_id, "⚠️ Descartando confirmación de método pendiente para procesar tu nuevo mensaje.")
+            session.state = UserState.IDLE
+            session.pending_transaction = None
+            session.options = []
+            session.edit_transaction_id = None
+
+    # --- FLUJO 1B: ESPERANDO CONFIRMACIÓN DE CATEGORÍA ---
     if session.state == UserState.AWAITING_CONFIRMATION:
         categoria_elegida = None
         for op in session.options:
@@ -125,76 +247,17 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             elif text.strip() == "2" and len(session.options) >= 2:
                 categoria_elegida = session.options[1]
 
-        if categoria_elegida:
+        if categoria_elegida and session.pending_transaction:
             session.pending_transaction.categoria = categoria_elegida
-            
-            # Verificar si esto era parte de una edición
-            if session.edit_transaction_id:
-                session.pending_transaction.id_transaccion = session.edit_transaction_id
-                success = sheets_client.update_transaction(session.pending_transaction)
-                msg_exito = f"✅ Edición guardada exitosamente en la categoría *{categoria_elegida}*."
-            else:
-                success = sheets_client.append_transaction(session.pending_transaction)
-                
-                # INYECCIÓN DE PRESUPUESTO (Solo para gastos nuevos y estrictos)
-                es_anomalo = False
-                estado_presupuesto = None
-                if str(session.pending_transaction.tipo.value).lower() == "gasto" and sheets_client:
-                    resumen_mes, _, _ = sheets_client.get_month_summary(0)
-                    acumulado = resumen_mes.get(categoria_elegida, {}).get("total", 0)
-                    
-                    promedio = sheets_client.get_category_monthly_average(categoria_elegida)
-                    if promedio > 0 and acumulado > promedio * 1.5:
-                        es_anomalo = True
-                        
-                    is_strict = categoria_elegida not in ["Ahorro", "Inversiones", "Salud", "Cuentas Básicas", "Educación", "Remuneraciones", "Otros Ingresos"]
-                    
-                    if is_strict:
-                        cat_config = sheets_client.load_categories_from_config().get(categoria_elegida, {})
-                        presupuesto = cat_config.get("presupuesto") if isinstance(cat_config, dict) else None
-                        
-                        if presupuesto and presupuesto > 0:
-                            if acumulado > presupuesto:
-                                estado_presupuesto = f"Lleva gastado {format_currency(acumulado)} en el mes, y su límite es {format_currency(presupuesto)}. ¡Se excedió!"
-                            elif acumulado >= presupuesto * 0.8:
-                                estado_presupuesto = f"Lleva gastado {format_currency(acumulado)} en el mes, y su límite es {format_currency(presupuesto)}. ¡Está peligrosamente cerca!"
-                
-                from src.parser import generar_comentario_ironico
-                chiste = generar_comentario_ironico(
-                    session.pending_transaction.monto, 
-                    session.pending_transaction.concepto, 
-                    session.pending_transaction.categoria,
-                    estado_presupuesto=estado_presupuesto,
-                    es_anomalo=es_anomalo
-                )
-                
-                msg_exito = f"✅ Registrado exitosamente en la categoría *{categoria_elegida}*."
-                if chiste:
-                    msg_exito += f"\n\n🤖 _{chiste}_"
-                
-            if success:
-                reply_markup = {
-                    "inline_keyboard": [
-                        [
-                            {"text": "✏️ Editar", "callback_data": f"edit:{session.pending_transaction.id_transaccion}"},
-                            {"text": "🗑️ Deshacer", "callback_data": f"delete:{session.pending_transaction.id_transaccion}"}
-                        ]
-                    ]
-                }
-                await enviar_mensaje_telegram(chat_id, msg_exito, reply_markup=reply_markup)
-            else:
-                await enviar_mensaje_telegram(chat_id, "❌ Error guardando en Google Sheets.")
+            es_edicion = bool(session.edit_transaction_id)
+            await finalizar_guardado_transaccion(chat_id, session, session.pending_transaction, es_edicion=es_edicion)
+            return
         else:
             await enviar_mensaje_telegram(chat_id, "⚠️ Descartando gasto ambiguo para procesar tu nuevo mensaje.")
-            
-        # Limpiar estado en ambos casos (éxito o cancelación)
-        session.state = UserState.IDLE
-        session.pending_transaction = None
-        session.options = []
-        session.edit_transaction_id = None
-        
-        if categoria_elegida:
-            return
+            session.state = UserState.IDLE
+            session.pending_transaction = None
+            session.options = []
+            session.edit_transaction_id = None
 
     # --- FLUJO 2: EDITANDO UNA TRANSACCIÓN (TEXTO LIBRE) ---
     if session.state == UserState.AWAITING_EDIT:
@@ -209,41 +272,44 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
                 session.options = parse_result.opciones_categoria
                 
                 opciones_list = "\n".join([f"{i+1}. {op}" for i, op in enumerate(session.options)])
+                reply_markup = {
+                    "inline_keyboard": [
+                        [{"text": f"{i+1}. {op}", "callback_data": f"cat:{op}"} for i, op in enumerate(session.options)]
+                    ]
+                }
                 pregunta = (
                     f"🤔 Parece que la corrección es por {format_currency(parse_result.transaction.monto)} en '{parse_result.transaction.concepto}'.\n"
                     f"No estoy seguro de la categoría. ¿Cuál es?\n"
                     f"{opciones_list}\n"
-                    f"_(Responde con el número, el nombre de la categoría, o cualquier otra cosa para cancelar)_"
+                    f"_(Toca un botón o responde con el número)_"
                 )
-                await enviar_mensaje_telegram(chat_id, pregunta)
+                await enviar_mensaje_telegram(chat_id, pregunta, reply_markup=reply_markup)
                 return
-            
-            success = sheets_client.update_transaction(parse_result.transaction)
-            if success:
-                respuesta = (
-                    f"✅ *Registro Actualizado Exitosamente:*\n"
-                    f"- *Monto:* {format_currency(parse_result.transaction.monto)}\n"
-                    f"- *Categoría:* {parse_result.transaction.categoria}\n"
-                    f"- *Tipo:* {parse_result.transaction.tipo.value}\n"
-                    f"- *Fecha:* {parse_result.transaction.fecha}\n"
-                    f"- *Metodo:* {parse_result.transaction.metodo.value}\n"
-                    f"- *Concepto:* {parse_result.transaction.concepto}"
-                )
+
+            elif parse_result.es_ambiguo_metodo and parse_result.opciones_metodo:
+                session.state = UserState.AWAITING_METHOD_CONFIRMATION
+                session.pending_transaction = parse_result.transaction
+                session.options = parse_result.opciones_metodo
+                
                 reply_markup = {
                     "inline_keyboard": [
                         [
-                            {"text": "✏️ Volver a Editar", "callback_data": f"edit:{parse_result.transaction.id_transaccion}"},
-                            {"text": "🗑️ Borrar Definitivamente", "callback_data": f"delete:{parse_result.transaction.id_transaccion}"}
+                            {"text": "🏢 Planilla", "callback_data": "metodo:Planilla"},
+                            {"text": "💳 Débito", "callback_data": "metodo:Débito"}
                         ]
                     ]
                 }
-                await enviar_mensaje_telegram(chat_id, respuesta, reply_markup=reply_markup)
-            else:
-                await enviar_mensaje_telegram(chat_id, "❌ Error actualizando en Google Sheets.")
-                
-            # Limpiar estado
-            session.state = UserState.IDLE
-            session.edit_transaction_id = None
+                pregunta = (
+                    f"🤔 En la corrección por {format_currency(parse_result.transaction.monto)} en '{parse_result.transaction.concepto}' ({parse_result.transaction.categoria}),\n"
+                    f"¿cómo fue pagado o descontado?\n\n"
+                    f"1. 🏢 *Planilla* (descuento en liquidación de sueldo)\n"
+                    f"2. 💳 *Débito* (o tarjeta bancaria)\n\n"
+                    f"_(Toca un botón o responde 1 o 2)_"
+                )
+                await enviar_mensaje_telegram(chat_id, pregunta, reply_markup=reply_markup)
+                return
+            
+            await finalizar_guardado_transaccion(chat_id, session, parse_result.transaction, es_edicion=True)
             
         except ValueError as ve:
             await enviar_mensaje_telegram(chat_id, f"⚠️ No pude entender la corrección:\n_{ve}_\n\n_(Si quieres salir del modo edición, escribe /cancelar)_")
@@ -343,6 +409,7 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         msg_lineas = [f"📊 *Resumen Mensual - {t_month:02d}/{t_year}*\n"]
         total_gastos = 0
         total_ingresos = 0
+        total_planilla = 0
         
         categorias = []
         montos = []
@@ -365,6 +432,7 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
                 msg_lineas.append(f"🟢 *{cat}:* {format_currency(datos['total'])} ({datos['count']} txs)")
             else:
                 total_gastos += datos['total']
+                total_planilla += datos.get('planilla', 0)
                 categorias.append(cat)
                 montos.append(datos['total'])
                 
@@ -386,13 +454,21 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
                     msg_lineas.append(f"- *{cat}:* {format_currency(datos['total'])} ({datos['count']} txs)")
             
         msg_lineas.append(f"\n💰 *Total Ingresos:* {format_currency(total_ingresos)}")
-        msg_lineas.append(f"💸 *Total Gastos:* {format_currency(total_gastos)}")
-        balance = total_ingresos - total_gastos
+        if total_planilla > 0:
+            gastos_cuenta = total_gastos - total_planilla
+            msg_lineas.append(f"💸 *Total Gastos:* {format_currency(total_gastos)}")
+            msg_lineas.append(f"  ├─ 💳 *En cuenta/tarjetas:* {format_currency(gastos_cuenta)}")
+            msg_lineas.append(f"  └─ 🏢 *Por planilla:* {format_currency(total_planilla)}")
+            balance = total_ingresos - gastos_cuenta
+        else:
+            msg_lineas.append(f"💸 *Total Gastos:* {format_currency(total_gastos)}")
+            balance = total_ingresos - total_gastos
+            
         if total_ingresos > 0:
             ahorro_pct = (balance / total_ingresos) * 100
-            msg_lineas.append(f"⚖️ *Balance Neto:* {format_currency(balance)} ({ahorro_pct:.1f}% ahorrado)")
+            msg_lineas.append(f"⚖️ *Balance Neto en Cuenta:* {format_currency(balance)} ({ahorro_pct:.1f}% ahorrado)")
         else:
-            msg_lineas.append(f"⚖️ *Balance Neto:* {format_currency(balance)}")
+            msg_lineas.append(f"⚖️ *Balance Neto en Cuenta:* {format_currency(balance)}")
         
         # Generar gráfico solo si hay gastos
         try:
@@ -584,72 +660,44 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             session.options = parse_result.opciones_categoria
             
             opciones_list = "\n".join([f"{i+1}. {op}" for i, op in enumerate(session.options)])
+            reply_markup = {
+                "inline_keyboard": [
+                    [{"text": f"{i+1}. {op}", "callback_data": f"cat:{op}"} for i, op in enumerate(session.options)]
+                ]
+            }
             pregunta = (
                 f"🤔 Parece que gastaste {format_currency(parse_result.transaction.monto)} en '{parse_result.transaction.concepto}'.\n"
                 f"No estoy seguro de la categoría. ¿Cuál es?\n"
                 f"{opciones_list}\n"
-                f"_(Responde con el número, el nombre de la categoría, o cualquier otra cosa para cancelar)_"
+                f"_(Toca un botón o responde con el número)_"
             )
-            await enviar_mensaje_telegram(chat_id, pregunta)
+            await enviar_mensaje_telegram(chat_id, pregunta, reply_markup=reply_markup)
             
+        elif parse_result.es_ambiguo_metodo and parse_result.opciones_metodo:
+            session.state = UserState.AWAITING_METHOD_CONFIRMATION
+            session.pending_transaction = parse_result.transaction
+            session.options = parse_result.opciones_metodo
+            
+            reply_markup = {
+                "inline_keyboard": [
+                    [
+                        {"text": "🏢 Planilla", "callback_data": "metodo:Planilla"},
+                        {"text": "💳 Débito", "callback_data": "metodo:Débito"}
+                    ]
+                ]
+            }
+            pregunta = (
+                f"🤔 Registré {format_currency(parse_result.transaction.monto)} en '{parse_result.transaction.concepto}' ({parse_result.transaction.categoria}).\n"
+                f"¿Cómo lo pagaste o se descontará?\n\n"
+                f"1. 🏢 *Planilla* (descuento en liquidación de sueldo)\n"
+                f"2. 💳 *Débito* (o tarjeta bancaria)\n\n"
+                f"_(Toca un botón o responde 1 o 2)_"
+            )
+            await enviar_mensaje_telegram(chat_id, pregunta, reply_markup=reply_markup)
+
         else:
             # Procesamiento directo
-            success = sheets_client.append_transaction(parse_result.transaction)
-            if success:
-                respuesta = (
-                    f"✅ Registrado exitosamente:\n"
-                    f"- *Monto:* {format_currency(parse_result.transaction.monto)}\n"
-                    f"- *Categoría:* {parse_result.transaction.categoria}\n"
-                    f"- *Tipo:* {parse_result.transaction.tipo.value}\n"
-                    f"- *Fecha:* {parse_result.transaction.fecha}\n"
-                    f"- *Metodo:* {parse_result.transaction.metodo.value}\n"
-                )
-                
-                es_anomalo = False
-                estado_presupuesto = None
-                
-                if str(parse_result.transaction.tipo.value).lower() == "gasto" and sheets_client:
-                    resumen_mes, _, _ = sheets_client.get_month_summary(0)
-                    acumulado = resumen_mes.get(parse_result.transaction.categoria, {}).get("total", 0)
-                    
-                    promedio = sheets_client.get_category_monthly_average(parse_result.transaction.categoria)
-                    if promedio > 0 and acumulado > promedio * 1.5:
-                        es_anomalo = True
-                        
-                    is_strict = parse_result.transaction.categoria not in ["Ahorro", "Inversiones", "Salud", "Cuentas Básicas", "Educación", "Remuneraciones", "Otros Ingresos"]
-                    if is_strict:
-                        cat_config = sheets_client.load_categories_from_config().get(parse_result.transaction.categoria, {})
-                        presupuesto = cat_config.get("presupuesto") if isinstance(cat_config, dict) else None
-                        
-                        if presupuesto and presupuesto > 0:
-                            if acumulado > presupuesto:
-                                estado_presupuesto = f"Lleva gastado {format_currency(acumulado)} en el mes, y su límite es {format_currency(presupuesto)}. ¡Se excedió!"
-                            elif acumulado >= presupuesto * 0.8:
-                                estado_presupuesto = f"Lleva gastado {format_currency(acumulado)} en el mes, y su límite es {format_currency(presupuesto)}. ¡Está peligrosamente cerca!"
-                
-                from src.parser import generar_comentario_ironico
-                chiste = generar_comentario_ironico(
-                    parse_result.transaction.monto, 
-                    parse_result.transaction.concepto, 
-                    parse_result.transaction.categoria,
-                    estado_presupuesto=estado_presupuesto,
-                    es_anomalo=es_anomalo
-                )
-                if chiste:
-                    respuesta += f"\n\n🤖 _{chiste}_"
-                
-                # Adjuntamos botones para editar o deshacer
-                reply_markup = {
-                    "inline_keyboard": [
-                        [
-                            {"text": "✏️ Editar", "callback_data": f"edit:{parse_result.transaction.id_transaccion}"},
-                            {"text": "🗑️ Deshacer", "callback_data": f"delete:{parse_result.transaction.id_transaccion}"}
-                        ]
-                    ]
-                }
-                await enviar_mensaje_telegram(chat_id, respuesta, reply_markup=reply_markup)
-            else:
-                await enviar_mensaje_telegram(chat_id, "❌ Error guardando en Google Sheets.")
+            await finalizar_guardado_transaccion(chat_id, session, parse_result.transaction, es_edicion=False)
                 
     except ValueError as ve:
         logger.error(f"Error de validación/parseo: {ve}")

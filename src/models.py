@@ -28,6 +28,7 @@ class MetodoPago(str, Enum):
     CREDITO = "Crédito"
     EFECTIVO = "Efectivo"
     TRANSFERENCIA = "Transferencia"
+    PLANILLA = "Planilla"
     OTRO = "Otro"
 
 class Transaction(BaseModel):
