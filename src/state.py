@@ -7,6 +7,7 @@ class UserState(str, Enum):
     AWAITING_CONFIRMATION = "AWAITING_CONFIRMATION"
     AWAITING_METHOD_CONFIRMATION = "AWAITING_METHOD_CONFIRMATION"
     AWAITING_EDIT = "AWAITING_EDIT"
+    AWAITING_BUDGET_INPUT = "AWAITING_BUDGET_INPUT"
 
 class ConversationState:
     """Almacena el estado conversacional de un usuario específico."""
@@ -15,6 +16,7 @@ class ConversationState:
         self.pending_transaction: Transaction | None = None
         self.options: list[str] = []
         self.edit_transaction_id: str | None = None
+        self.target_category: str | None = None
 
 # Diccionario global en memoria para guardar el estado por chat_id
 # En un bot de producción masivo, esto iría a Redis o PostgreSQL.

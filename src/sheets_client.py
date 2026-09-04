@@ -511,3 +511,42 @@ class GoogleSheetsClient:
                 "Otros Gastos": {"color": "#7F8C8D", "presupuesto": None},
                 "Otros Ingresos": {"color": "#D35400", "presupuesto": None}
             }
+
+    def update_category_budget(self, category_name: str, new_budget) -> bool:
+        """
+        Actualiza el presupuesto de una categoría en la pestaña 'Config' (columna C).
+        Si new_budget es None o <= 0, vacía la celda.
+        """
+        try:
+            result = self.sheet.values().get(
+                spreadsheetId=self.spreadsheet_id,
+                range="Config!A2:A"
+            ).execute()
+            values = result.get('values', [])
+
+            target_row = None
+            for idx, row in enumerate(values, start=2):
+                if row and row[0].strip().lower() == category_name.strip().lower():
+                    target_row = idx
+                    break
+
+            if not target_row:
+                logger.error(f"Categoría '{category_name}' no encontrada en la pestaña Config.")
+                return False
+
+            valor_celda = str(int(new_budget)) if (new_budget is not None and new_budget > 0) else ""
+
+            self.sheet.values().update(
+                spreadsheetId=self.spreadsheet_id,
+                range=f"Config!C{target_row}",
+                valueInputOption="USER_ENTERED",
+                body={"values": [[valor_celda]]}
+            ).execute()
+
+            # Invalidar caché local
+            self._cached_categories = None
+            logger.info(f"Presupuesto de '{category_name}' actualizado a '{valor_celda}' (fila {target_row}).")
+            return True
+        except Exception as e:
+            logger.error(f"Error actualizando presupuesto para '{category_name}': {e}")
+            return False

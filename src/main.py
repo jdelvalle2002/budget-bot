@@ -1,3 +1,5 @@
+import re
+from decimal import Decimal
 import os
 import logging
 import httpx
@@ -44,6 +46,42 @@ async def enviar_mensaje_telegram(chat_id: str, texto: str, reply_markup: dict =
             await client.post(url, json=payload)
         except Exception as e:
             logger.error(f"Error enviando mensaje a Telegram: {e}")
+
+def parse_budget_amount(text: str) -> Decimal | None:
+    """Parsea el monto ingresado para presupuesto (ej: 80k, 15 lucas, 1.5m, 150000, o 0 para borrar)."""
+    t = text.strip().lower()
+    if t in ['0', 'borrar', 'eliminar', 'quitar', 'ninguno', 'sin limite', 'sin límite', 'none']:
+        return None
+
+    t = t.replace('$', '').replace('€', '').strip()
+
+    # Manejo de unidades k / lucas / m / millones
+    match_unit = re.match(r'^([\d.,]+)\s*(k|lucas?|m|mill[oó]n(?:es)?)$', t)
+    if match_unit:
+        raw_num = match_unit.group(1).replace(',', '.')
+        unit = match_unit.group(2)
+        mult = Decimal(1000) if (unit.startswith('k') or unit.startswith('luca')) else Decimal(1000000)
+        try:
+            return Decimal(raw_num) * mult
+        except Exception:
+            raise ValueError("Monto inválido.")
+
+    clean_num = t
+    if clean_num.count('.') > 0 and len(clean_num.split('.')[-1]) == 3:
+        clean_num = clean_num.replace('.', '')
+    if clean_num.count(',') > 0 and len(clean_num.split(',')[-1]) == 3:
+        clean_num = clean_num.replace(',', '')
+    clean_num = clean_num.replace(',', '.')
+
+    try:
+        val = Decimal(clean_num)
+        if val < 0:
+            raise ValueError("El presupuesto no puede ser negativo.")
+        if val == 0:
+            return None
+        return val
+    except Exception:
+        raise ValueError("No pude entender el monto. Ingresa un valor numérico como 80k, 150000 o 0.")
 
 async def enviar_foto_telegram(chat_id: str, photo_bytes: bytes, caption: str = ""):
     """Función auxiliar para enviar imágenes a Telegram"""
@@ -182,6 +220,54 @@ async def process_telegram_callback(chat_id: str, callback_data: str):
             es_edicion = bool(session.edit_transaction_id)
             await finalizar_guardado_transaccion(chat_id, session, session.pending_transaction, es_edicion=es_edicion)
 
+    elif callback_data == "presup_menu":
+        categories = sheets_client.load_categories_from_config(force_refresh=True) if sheets_client else {}
+        if not categories:
+            await enviar_mensaje_telegram(chat_id, "❌ No se encontraron categorías en tu planilla.")
+            return
+
+        keyboard = []
+        row = []
+        for cat in sorted(categories.keys()):
+            row.append({"text": cat, "callback_data": f"presup_cat:{cat}"})
+            if len(row) == 2:
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
+
+        keyboard.append([{"text": "🚫 Cancelar", "callback_data": "cancel"}])
+
+        msg = "🎯 *Selecciona la categoría a la que deseas asignar o cambiar el presupuesto:*"
+        await enviar_mensaje_telegram(chat_id, msg, reply_markup={"inline_keyboard": keyboard})
+
+    elif callback_data.startswith("presup_cat:"):
+        cat_name = callback_data.split(":", 1)[1]
+        categories = sheets_client.load_categories_from_config() if sheets_client else {}
+        cat_info = categories.get(cat_name, {})
+        actual = cat_info.get("presupuesto") if isinstance(cat_info, dict) else None
+
+        session.state = UserState.AWAITING_BUDGET_INPUT
+        session.target_category = cat_name
+
+        actual_str = format_currency(Decimal(str(actual))) if (actual and actual > 0) else "Sin límite"
+
+        msg = (
+            f"✏️ *Modificar Presupuesto: {cat_name}*\n\n"
+            f"💵 *Límite actual:* {actual_str}\n\n"
+            f"Envía el nuevo monto mensual (ej: _80k_, _150000_, _50 lucas_ o escribe _0_ para eliminar el límite):\n\n"
+            f"_(Escribe /cancelar si no deseas hacer cambios)_"
+        )
+        await enviar_mensaje_telegram(chat_id, msg)
+
+    elif callback_data == "cancel":
+        session.state = UserState.IDLE
+        session.target_category = None
+        session.pending_transaction = None
+        session.options = []
+        session.edit_transaction_id = None
+        await enviar_mensaje_telegram(chat_id, "🚫 Operación cancelada.")
+
 async def process_telegram_update(chat_id: str, text: str, message_id: str):
     """
     Lógica conversacional que se ejecuta en Background para no bloquear a Telegram.
@@ -211,6 +297,7 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             session.pending_transaction = None
             session.options = []
             session.edit_transaction_id = None
+            session.target_category = None
             if texto_limpio in ["/cancelar", "cancelar"]:
                 await enviar_mensaje_telegram(chat_id, "🚫 Operación cancelada.")
                 return
@@ -244,6 +331,43 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
             session.pending_transaction = None
             session.options = []
             session.edit_transaction_id = None
+            session.target_category = None
+
+    # --- FLUJO 1C: ESPERANDO NUEVO MONTO DE PRESUPUESTO ---
+    if session.state == UserState.AWAITING_BUDGET_INPUT:
+        cat_name = session.target_category
+        if not cat_name:
+            session.state = UserState.IDLE
+            await enviar_mensaje_telegram(chat_id, "⚠️ No había categoría seleccionada. Operación cancelada.")
+            return
+
+        try:
+            nuevo_monto = parse_budget_amount(text)
+            success = sheets_client.update_category_budget(cat_name, nuevo_monto) if sheets_client else False
+
+            session.state = UserState.IDLE
+            session.target_category = None
+
+            if success:
+                if nuevo_monto and nuevo_monto > 0:
+                    msg = (
+                        f"✅ *Presupuesto actualizado exitosamente:*\n\n"
+                        f"• *Categoría:* {cat_name}\n"
+                        f"• *Nuevo límite:* {format_currency(nuevo_monto)} / mes\n\n"
+                        f"_(Usa `/presupuesto` para ver el consolidado total)_"
+                    )
+                else:
+                    msg = (
+                        f"🗑️ *Límite eliminado exitosamente:*\n\n"
+                        f"• Se ha quitado el presupuesto para *{cat_name}*.\n\n"
+                        f"_(Usa `/presupuesto` para ver el consolidado total)_"
+                    )
+                await enviar_mensaje_telegram(chat_id, msg)
+            else:
+                await enviar_mensaje_telegram(chat_id, f"❌ Hubo un error al guardar el presupuesto de *{cat_name}* en Google Sheets.")
+        except ValueError as e:
+            await enviar_mensaje_telegram(chat_id, f"⚠️ {str(e)}\n\nIntenta de nuevo o escribe `/cancelar`.")
+        return
 
     # --- FLUJO 1B: ESPERANDO CONFIRMACIÓN DE CATEGORÍA ---
     if session.state == UserState.AWAITING_CONFIRMATION:
@@ -439,7 +563,12 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
                 "💡 *Tip:* Entra a tu Google Sheets y agrega los montos en la columna *'Presupuesto'* "
                 "de la pestaña *'Config'* para que el bot controle tus límites mensuales."
             )
-            await enviar_mensaje_telegram(chat_id, msg)
+            reply_markup = {
+                "inline_keyboard": [
+                    [{"text": "➕ Definir Presupuesto", "callback_data": "presup_menu"}]
+                ]
+            }
+            await enviar_mensaje_telegram(chat_id, msg, reply_markup=reply_markup)
             return
 
         # Ordenar de mayor a menor presupuesto
@@ -456,7 +585,12 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         if sin_presupuesto:
             lineas.append(f"\n💡 _Nota: Hay {len(sin_presupuesto)} categorías sin límite asignado en la pestaña 'Config'._")
 
-        await enviar_mensaje_telegram(chat_id, "\n".join(lineas))
+        reply_markup = {
+            "inline_keyboard": [
+                [{"text": "✏️ Modificar Presupuesto", "callback_data": "presup_menu"}]
+            ]
+        }
+        await enviar_mensaje_telegram(chat_id, "\n".join(lineas), reply_markup=reply_markup)
         return
 
     if texto_limpio.startswith("/resumen") or texto_limpio.startswith("resumen"):
