@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from src.parser import parse_transaction_message
 from src.sheets_client import GoogleSheetsClient
 from src.state import get_user_session, UserState
-from src.models import format_currency, Transaction, MetodoPago
+from src.models import format_currency, Transaction, MetodoPago, get_local_date, parse_flexible_date
 
 # Cargar variables de entorno
 load_dotenv()
@@ -279,7 +279,6 @@ async def finalizar_guardado_transaccion(chat_id: str, session, tx: Transaction,
                 
                 if presupuesto and presupuesto > 0:
                     from src.pacing import compute_category_pacing
-                    from src.models import get_local_date
                     pacing_metric = compute_category_pacing(
                         categoria=tx.categoria,
                         limite=Decimal(str(presupuesto)),
@@ -665,51 +664,127 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
         
     if texto_limpio.startswith("/tendencias") or texto_limpio.startswith("tendencias"):
         await enviar_mensaje_telegram(chat_id, "⏳ Analizando tus tendencias de gasto...")
-        from src.models import get_local_date
+        import calendar
+        
         hoy = get_local_date()
         day = hoy.day
         
-        # Obtenemos los resúmenes hasta el día actual
-        resumen_actual, m_act, y_act = sheets_client.get_month_summary(0, max_day=day)
-        resumen_pasado, m_pas, y_pas = sheets_client.get_month_summary(-1, max_day=day)
+        # 1. Obtener resúmenes: corte a la fecha (MTD) y mes completo
+        resumen_actual_mtd, m_act, y_act = sheets_client.get_month_summary(0, max_day=day)
+        resumen_pasado_mtd, m_pas, y_pas = sheets_client.get_month_summary(-1, max_day=day)
+        resumen_pasado_full, _, _ = sheets_client.get_month_summary(-1)
         
-        categorias_ingreso_nativas = ["Remuneraciones", "Otros Ingresos", "Inversiones"]
+        categorias_ingreso = ["Remuneraciones", "Otros Ingresos", "Inversiones"]
         
-        gastos_actual = sum(datos['total'] for cat, datos in resumen_actual.items() if cat not in categorias_ingreso_nativas)
-        gastos_pasado = sum(datos['total'] for cat, datos in resumen_pasado.items() if cat not in categorias_ingreso_nativas)
+        MESES_ES = {
+            1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril",
+            5: "Mayo", 6: "Junio", 7: "Julio", 8: "Agosto",
+            9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"
+        }
+        nom_act = MESES_ES.get(m_act, f"Mes {m_act}")
+        nom_pas = MESES_ES.get(m_pas, f"Mes {m_pas}")
         
-        if gastos_pasado == 0:
-            await enviar_mensaje_telegram(chat_id, "ℹ️ No tienes suficientes gastos registrados el mes pasado para hacer una comparación.")
+        dias_mes_act = calendar.monthrange(y_act, m_act)[1]
+        dias_mes_pas = calendar.monthrange(y_pas, m_pas)[1]
+        
+        # Gastos este mes (a la fecha)
+        gasto_bruto_act = sum(d.get('gasto_bruto', d['total']) for c, d in resumen_actual_mtd.items() if c not in categorias_ingreso)
+        gasto_neto_act = sum(d['total'] for c, d in resumen_actual_mtd.items() if c not in categorias_ingreso)
+        aportes_act = sum(d.get('aportes', 0.0) for c, d in resumen_actual_mtd.items() if c not in categorias_ingreso)
+        
+        # Gastos mes pasado: corte a la fecha vs mes completo
+        gasto_bruto_pas_mtd = sum(d.get('gasto_bruto', d['total']) for c, d in resumen_pasado_mtd.items() if c not in categorias_ingreso)
+        gasto_bruto_pas_full = sum(d.get('gasto_bruto', d['total']) for c, d in resumen_pasado_full.items() if c not in categorias_ingreso)
+        gasto_neto_pas_full = sum(d['total'] for c, d in resumen_pasado_full.items() if c not in categorias_ingreso)
+        
+        # Caso 1: Mes pasado sin ningún registro (primer mes del usuario)
+        if gasto_bruto_pas_full == 0 and gasto_neto_pas_full == 0:
+            msg = (
+                f"ℹ️ Aún no tienes gastos registrados en {nom_pas} ({m_pas:02d}/{y_pas}) para comparar tendencias.\n\n"
+                f"📊 *En lo que va de {nom_act} (día 1 al {day}):*\n"
+                f"• Gasto de consumo: **{format_currency(gasto_bruto_act)}**\n"
+            )
+            if aportes_act > 0:
+                msg += f"• Reembolsos/Aportes: {format_currency(aportes_act)}\n"
+                msg += f"• Balance neto: {format_currency(gasto_neto_act)}\n"
+            msg += f"\n💡 A partir de tu segundo mes, verás aquí la evolución y comparativa con el mes anterior."
+            await enviar_mensaje_telegram(chat_id, msg)
             return
+
+        # Proyecciones y promedios
+        promedio_dia_act = gasto_bruto_act / max(1, day)
+        proyeccion_cierre_act = promedio_dia_act * dias_mes_act
+        promedio_dia_pas = gasto_bruto_pas_full / dias_mes_pas
+        
+        msg = f"📈 *Tendencias de Gasto: {nom_act} vs {nom_pas}*\n\n"
+        
+        # Caso 2: Sí hay gastos en el corte homólogo (día 1 al {day}) del mes pasado
+        if gasto_bruto_pas_mtd > 0:
+            var_mtd = ((gasto_bruto_act - gasto_bruto_pas_mtd) / gasto_bruto_pas_mtd) * 100
+            emoji_mtd = "🔴 Subió" if var_mtd > 0 else ("🟢 Bajó" if var_mtd < 0 else "⚪ Igual")
             
-        variacion_total = ((gastos_actual - gastos_pasado) / gastos_pasado) * 100
-        emoji_total = "🔴 Subió" if variacion_total > 0 else "🟢 Bajó"
-        
-        msg = f"📈 *Tendencias de Gasto (hasta el día {day})*\n\n"
-        msg += f"🗓️ {m_act:02d}/{y_act}: {format_currency(gastos_actual)}\n"
-        msg += f"🗓️ {m_pas:02d}/{y_pas}: {format_currency(gastos_pasado)}\n"
-        msg += f"📊 Variación: {emoji_total} un {abs(variacion_total):.1f}%\n\n"
-        
-        # Categorías que más subieron
-        variaciones = []
-        for cat, datos in resumen_actual.items():
-            if cat in categorias_ingreso_nativas:
-                continue
-                
-            monto_actual = datos['total']
-            monto_pasado = resumen_pasado.get(cat, {}).get("total", 0)
-            diff = monto_actual - monto_pasado
-            if diff > 0:
-                variaciones.append((cat, diff, monto_actual, monto_pasado))
-                
-        if variaciones:
-            msg += "*🔥 Categorías que más aumentaron:*\n"
-            variaciones.sort(key=lambda x: x[1], reverse=True)
-            for cat, diff, m_act_cat, m_pas_cat in variaciones[:3]:
-                pct = (diff / m_pas_cat * 100) if m_pas_cat > 0 else 100
-                msg += f"• *{cat}:* +{format_currency(diff)} (⬆️ {pct:.0f}%)\n"
+            msg += f"🗓️ *Corte a la fecha (Día 1 al {day}):*\n"
+            msg += f"• {nom_act} ({m_act:02d}/{y_act}): **{format_currency(gasto_bruto_act)}** ({format_currency(promedio_dia_act)}/día)\n"
+            msg += f"• {nom_pas} ({m_pas:02d}/{y_pas}): **{format_currency(gasto_bruto_pas_mtd)}**\n"
+            msg += f"• Variación a la fecha: {emoji_mtd} **{abs(var_mtd):.1f}%**\n\n"
         else:
-            msg += "🏆 ¡Excelente! Ninguna categoría ha subido respecto al mes pasado.\n"
+            # Caso 3: No hubo gastos en los días 1 al {day} de mes pasado (ej. usuario comenzó más tarde o gastó 0)
+            msg += f"🗓️ *Corte a la fecha (Día 1 al {day}):*\n"
+            msg += f"• {nom_act} ({m_act:02d}/{y_act}): **{format_currency(gasto_bruto_act)}** ({format_currency(promedio_dia_act)}/día)\n"
+            msg += f"• {nom_pas} (días 1 al {day}): _$0 registrados_\n\n"
+            msg += f"ℹ️ _Nota: No registraste gastos entre el día 1 y {day} de {nom_pas}. Comparamos tu ritmo diario contra el cierre de {nom_pas}:_\n\n"
+            
+        # Comparación de Cierre y Ritmo Diario
+        var_proy = ((proyeccion_cierre_act - gasto_bruto_pas_full) / gasto_bruto_pas_full) * 100 if gasto_bruto_pas_full > 0 else 0
+        emoji_proy = "🔴 Subiría" if var_proy > 0 else ("🟢 Bajaría" if var_proy < 0 else "⚪ Igual")
+        
+        msg += f"🔮 *Proyección de Cierre vs Mes Anterior:*\n"
+        msg += f"• Cierre {nom_pas}: **{format_currency(gasto_bruto_pas_full)}** (media {format_currency(promedio_dia_pas)}/día)\n"
+        msg += f"• Proyección {nom_act}: **{format_currency(proyeccion_cierre_act)}** ({emoji_proy} **{abs(var_proy):.1f}%** a este ritmo)\n\n"
+        
+        if aportes_act > 0:
+            msg += f"💡 _Nota reembolsos: Tienes {format_currency(aportes_act)} en aportes/reembolsos este mes (gasto neto: {format_currency(gasto_neto_act)})._\n\n"
+            
+        # Análisis de Categorías: Mayores aumentos y Mayores ahorros
+        resumen_comp = resumen_pasado_mtd if gasto_bruto_pas_mtd > 0 else resumen_pasado_full
+        etiqueta_comp = f"{nom_pas} (al día {day})" if gasto_bruto_pas_mtd > 0 else f"{nom_pas} (total)"
+        
+        aumentos = []
+        ahorros = []
+        
+        todas_cats = set(resumen_actual_mtd.keys()) | set(resumen_comp.keys())
+        for cat in todas_cats:
+            if cat in categorias_ingreso:
+                continue
+            m_act_cat = resumen_actual_mtd.get(cat, {}).get('gasto_bruto', resumen_actual_mtd.get(cat, {}).get('total', 0.0))
+            m_pas_cat = resumen_comp.get(cat, {}).get('gasto_bruto', resumen_comp.get(cat, {}).get('total', 0.0))
+            
+            diff = m_act_cat - m_pas_cat
+            if diff > 0 and m_act_cat > 0:
+                aumentos.append((cat, diff, m_act_cat, m_pas_cat))
+            elif diff < 0 and m_pas_cat > 0:
+                ahorros.append((cat, abs(diff), m_act_cat, m_pas_cat))
+                
+        if aumentos:
+            aumentos.sort(key=lambda x: x[1], reverse=True)
+            msg += f"*🔥 Mayor Aumento vs {etiqueta_comp}:*\n"
+            for cat, diff, m_act_c, m_pas_c in aumentos[:3]:
+                if m_pas_c > 0:
+                    pct = (diff / m_pas_c) * 100
+                    msg += f"• *{cat}:* +{format_currency(diff)} (⬆️ {pct:.0f}%)\n"
+                else:
+                    msg += f"• *{cat}:* +{format_currency(diff)} (nuevo gasto)\n"
+            msg += "\n"
+            
+        if ahorros:
+            ahorros.sort(key=lambda x: x[1], reverse=True)
+            msg += f"*🌱 Mayor Ahorro vs {etiqueta_comp}:*\n"
+            for cat, diff, m_act_c, m_pas_c in ahorros[:3]:
+                pct = (diff / m_pas_c) * 100
+                msg += f"• *{cat}:* -{format_currency(diff)} (⬇️ {pct:.0f}%)\n"
+            msg += "\n"
+        elif not aumentos:
+            msg += "🏆 ¡Excelente! Ninguna categoría ha subido respecto al mes anterior.\n"
             
         await enviar_mensaje_telegram(chat_id, msg)
         return
@@ -938,7 +1013,6 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
                 await enviar_mensaje_telegram(chat_id, "\n".join(msg_lineas), reply_markup=reply_markup)
                 return
 
-            from src.models import get_local_date
             hora_gen = get_local_date().strftime("%d/%m/%Y")
 
             cat_graf = [d[0] for d in datos_grafico]

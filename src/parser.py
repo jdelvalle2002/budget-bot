@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
 
-from src.models import Transaction, TipoTransaccion, MetodoPago, get_local_date, format_currency
+from src.models import Transaction, TipoTransaccion, MetodoPago, get_local_date, format_currency, parse_flexible_date
 
 logger = logging.getLogger(__name__)
 
@@ -210,15 +210,8 @@ def parse_transaction_message(text: str, message_id: str, categorias_disponibles
         opciones_metodo = extracted_data.pop("opciones_metodo", [])
         
         fecha_str = extracted_data.pop("fecha", None)
-        fecha_tx = get_local_date()
-        if fecha_str:
-            if isinstance(fecha_str, str):
-                try:
-                    fecha_tx = date.fromisoformat(fecha_str)
-                except ValueError:
-                    pass
-            else:
-                fecha_tx = fecha_str
+        fecha_parsed = parse_flexible_date(fecha_str)
+        fecha_tx = fecha_parsed if fecha_parsed is not None else get_local_date()
         
         tx = Transaction(
             id_transaccion=message_id,
@@ -314,30 +307,16 @@ def filtrar_transacciones(
     hoy = get_local_date()
     filtradas = []
 
-    f_desde = None
-    f_hasta = None
-    if fecha_desde:
-        try:
-            f_desde = date.fromisoformat(fecha_desde.split("T")[0])
-        except Exception:
-            f_desde = None
-    if fecha_hasta:
-        try:
-            f_hasta = date.fromisoformat(fecha_hasta.split("T")[0])
-        except Exception:
-            f_hasta = None
+    f_desde = parse_flexible_date(fecha_desde)
+    f_hasta = parse_flexible_date(fecha_hasta)
 
     for tx in transacciones:
         fecha_str = tx.get('fecha', '')
         if not fecha_str:
             continue
 
-        try:
-            if "T" in fecha_str:
-                fecha_tx = date.fromisoformat(fecha_str.split("T")[0])
-            else:
-                fecha_tx = date.fromisoformat(fecha_str)
-        except ValueError:
+        fecha_tx = parse_flexible_date(fecha_str)
+        if not fecha_tx:
             continue
 
         # Si vienen fechas explícitas calculadas por el modelo, tienen prioridad
@@ -613,9 +592,11 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
             import calendar
             dias = 1
             if fecha_desde and fecha_hasta:
-                try:
-                    dias = max(1, (date.fromisoformat(fecha_hasta) - date.fromisoformat(fecha_desde)).days + 1)
-                except Exception:
+                d_h = parse_flexible_date(fecha_hasta)
+                d_d = parse_flexible_date(fecha_desde)
+                if d_h and d_d:
+                    dias = max(1, (d_h - d_d).days + 1)
+                else:
                     dias = hoy_date.day
             elif filtro_tiempo == FiltroTiempo.ESTE_MES:
                 dias = hoy_date.day
@@ -841,15 +822,8 @@ def parse_multi_transaction_message(text: str, base_message_id: str, categorias_
             _ = tx_data.pop("opciones_metodo", [])
             
             fecha_str = tx_data.pop("fecha", None)
-            fecha_tx = get_local_date()
-            if fecha_str:
-                if isinstance(fecha_str, str):
-                    try:
-                        fecha_tx = date.fromisoformat(fecha_str)
-                    except ValueError:
-                        pass
-                else:
-                    fecha_tx = fecha_str
+            fecha_parsed = parse_flexible_date(fecha_str)
+            fecha_tx = fecha_parsed if fecha_parsed is not None else get_local_date()
             
             tx = Transaction(
                 id_transaccion=f"{base_message_id}-{i+1}",

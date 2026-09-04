@@ -279,11 +279,8 @@ class GoogleSheetsClient:
         Obtiene el resumen de gastos/ingresos para un mes.
         Si max_day está definido, solo suma hasta ese día inclusive.
         """
-        from src.models import get_local_date
+        from src.models import get_local_date, parse_flexible_date
         hoy = get_local_date()
-        
-        if not sheet_name:
-            sheet_name = str(hoy.year)
         
         target_month = hoy.month + month_offset
         target_year = hoy.year
@@ -295,6 +292,9 @@ class GoogleSheetsClient:
         while target_month > 12:
             target_month -= 12
             target_year += 1
+
+        if not sheet_name:
+            sheet_name = str(target_year)
             
         mes_objetivo = f"{target_year}-{target_month:02d}"
         
@@ -317,56 +317,55 @@ class GoogleSheetsClient:
                     monto_str = str(row[3]).replace(',', '')
                     categoria = row[5]
                     
-                    if fecha_str.startswith(mes_objetivo):
-                        if max_day is not None:
-                            try:
-                                day = int(fecha_str.split('T')[0].split('-')[2])
-                                if day > max_day:
-                                    continue
-                            except Exception:
-                                pass
+                    d_tx = parse_flexible_date(fecha_str)
+                    if not d_tx:
+                        continue
+                    if d_tx.year != target_year or d_tx.month != target_month:
+                        continue
+                    if max_day is not None and d_tx.day > max_day:
+                        continue
                                 
-                        try:
-                            monto = float(monto_str)
-                            metodo = str(row[6]).strip().capitalize() if len(row) > 6 else ""
-                            if categoria not in resumen:
-                                resumen[categoria] = {
-                                    "total": 0.0,
-                                    "gasto_bruto": 0.0,
-                                    "aportes": 0.0,
-                                    "count": 0,
-                                    "planilla": 0.0
-                                }
+                    try:
+                        monto = float(monto_str)
+                        metodo = str(row[6]).strip().capitalize() if len(row) > 6 else ""
+                        if categoria not in resumen:
+                            resumen[categoria] = {
+                                "total": 0.0,
+                                "gasto_bruto": 0.0,
+                                "aportes": 0.0,
+                                "count": 0,
+                                "planilla": 0.0
+                            }
+                        else:
+                            if "gasto_bruto" not in resumen[categoria]:
+                                resumen[categoria]["gasto_bruto"] = 0.0
+                            if "aportes" not in resumen[categoria]:
+                                resumen[categoria]["aportes"] = 0.0
+                            if "planilla" not in resumen[categoria]:
+                                resumen[categoria]["planilla"] = 0.0
+                        
+                        is_ingreso_nativo = categoria in categorias_ingreso
+                        es_planilla = (metodo == "Planilla")
+                        
+                        if tipo.lower() == "gasto":
+                            if is_ingreso_nativo:
+                                resumen[categoria]["total"] -= monto # Gasto en categoría de ingreso resta
                             else:
-                                if "gasto_bruto" not in resumen[categoria]:
-                                    resumen[categoria]["gasto_bruto"] = 0.0
-                                if "aportes" not in resumen[categoria]:
-                                    resumen[categoria]["aportes"] = 0.0
-                                if "planilla" not in resumen[categoria]:
-                                    resumen[categoria]["planilla"] = 0.0
+                                resumen[categoria]["total"] += monto # Gasto en categoría de gasto suma
+                                resumen[categoria]["gasto_bruto"] += monto
+                                if es_planilla:
+                                    resumen[categoria]["planilla"] += monto
+                            resumen[categoria]["count"] += 1
                             
-                            is_ingreso_nativo = categoria in categorias_ingreso
-                            es_planilla = (metodo == "Planilla")
-                            
-                            if tipo.lower() == "gasto":
-                                if is_ingreso_nativo:
-                                    resumen[categoria]["total"] -= monto # Gasto en categoría de ingreso resta
-                                else:
-                                    resumen[categoria]["total"] += monto # Gasto en categoría de gasto suma
-                                    resumen[categoria]["gasto_bruto"] += monto
-                                    if es_planilla:
-                                        resumen[categoria]["planilla"] += monto
-                                resumen[categoria]["count"] += 1
-                                
-                            elif tipo.lower() == "ingreso":
-                                if is_ingreso_nativo:
-                                    resumen[categoria]["total"] += monto # Ingreso en categoría de ingreso suma
-                                else:
-                                    resumen[categoria]["total"] -= monto # Ingreso en categoría de gasto resta (NETEO)
-                                    resumen[categoria]["aportes"] += monto
-                                resumen[categoria]["count"] += 1
-                        except ValueError:
-                            continue
+                        elif tipo.lower() == "ingreso":
+                            if is_ingreso_nativo:
+                                resumen[categoria]["total"] += monto # Ingreso en categoría de ingreso suma
+                            else:
+                                resumen[categoria]["total"] -= monto # Ingreso en categoría de gasto resta (NETEO)
+                                resumen[categoria]["aportes"] += monto
+                            resumen[categoria]["count"] += 1
+                    except ValueError:
+                        continue
             return resumen, target_month, target_year
         except Exception as e:
             logger.error(f"Error generando resumen: {e}")
@@ -396,8 +395,12 @@ class GoogleSheetsClient:
                     monto_str = str(row[3]).replace(',', '')
                     cat_row = row[5]
                     
+                    d_tx = parse_flexible_date(fecha_str)
+                    if not d_tx:
+                        continue
+                        
                     if cat_row.lower() == categoria.lower():
-                        mes = fecha_str[:7] # YYYY-MM
+                        mes = f"{d_tx.year}-{d_tx.month:02d}"
                         if mes not in meses_totales:
                             meses_totales[mes] = 0.0
                             
