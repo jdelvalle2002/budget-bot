@@ -116,6 +116,16 @@ def test_structural_categories_and_reimbursements():
     assert metric_tel.es_alerta is False
     print("  ✅ Telefonía identificada como estructural y no genera alerta falsa.")
 
+    # Prueba case-insensitive: minúsculas y mayúsculas
+    metric_case_lower = compute_category_pacing(
+        categoria="salud",
+        limite=Decimal("50000"),
+        gasto_neto=Decimal("45000"),
+        target_date=target,
+    )
+    assert metric_case_lower.es_estructural is True
+    print("  ✅ Categoría en minúsculas ('salud') identificada correctamente como estructural.")
+
     # Reembolso mayor al gasto (neto <= 0)
     metric_reimb = compute_category_pacing(
         categoria="Alimentación",

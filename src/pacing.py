@@ -14,8 +14,8 @@ from src.models import format_currency, get_local_date
 
 # Categorías típicamente fijas o estructurales (donde el gasto suele cargarse en un solo pago mensual)
 CATEGORIAS_ESTRUCTURALES = {
-    "Ahorro", "Inversiones", "Salud", "Cuentas Básicas", "Educación",
-    "Remuneraciones", "Otros Ingresos", "Hogar", "Telefonía", "Psicólogo", "Psico","Psicologo"
+    "Ahorro", "Inversiones", "Salud", "Cuentas Básicas", "Cuentas básicas", "Educación",
+    "Remuneraciones", "Otros Ingresos", "Telefonía", "Psicólogo", "Psico","Psicologo"
 }
 
 @dataclass
@@ -84,7 +84,7 @@ def compute_category_pacing(
     remanente = max(Decimal(0), limite - gasto_neto)
     margen_diario = remanente / Decimal(dias_restantes)
 
-    es_estructural = categoria in CATEGORIAS_ESTRUCTURALES
+    es_estructural = any(c.lower() == categoria.strip().lower() for c in CATEGORIAS_ESTRUCTURALES)
 
     # Evaluación de severidad
     severidad = "OK"
