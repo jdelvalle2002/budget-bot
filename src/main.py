@@ -54,7 +54,11 @@ def parse_budget_amount(text: str) -> Decimal | None:
     if t in ['0', 'borrar', 'eliminar', 'quitar', 'ninguno', 'sin limite', 'sin límite', 'none']:
         return None
 
-    t = t.replace('$', '').replace('€', '').strip()
+    curr_symbol = os.getenv("CURRENCY_SYMBOL", "$")
+    for sym in [curr_symbol, '$', '€', '£']:
+        if sym:
+            t = t.replace(sym.lower(), '')
+    t = t.strip()
 
     # Manejo de unidades k / lucas / m / millones
     match_unit = re.match(r'^([\d.,]+)\s*(k|lucas?|m|mill[oó]n(?:es)?)$', t)

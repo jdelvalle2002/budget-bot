@@ -78,12 +78,20 @@ def try_fast_path(text: str, message_id: str) -> ParseResult | None:
                 opciones_metodo=[]
             )
 
-    # 2. Fast-path estándar para concepto + monto o monto + concepto
-    match = re.match(r'^\s*(?P<monto>\d+)\s+(?P<concepto>.+)\s*$', text_clean)
+    # 2. Fast-path estándar para monto + concepto o concepto + monto (con soporte opcional de decimales y símbolos de moneda)
+    match = re.match(r'^\s*(?:[$€£]\s*)?(?P<monto>\d+(?:[.,]\d{1,2})?)\s+(?P<concepto>.+)\s*$', text_clean)
+    monto_str = None
+    concepto_str = None
     if match:
         monto_str = match.group('monto')
         concepto_str = match.group('concepto').strip()
-        
+    else:
+        match_inv = re.match(r'^\s*(?P<concepto>[^\d]+?)\s+(?:[$€£]\s*)?(?P<monto>\d+(?:[.,]\d{1,2})?)\s*$', text_clean)
+        if match_inv:
+            monto_str = match_inv.group('monto')
+            concepto_str = match_inv.group('concepto').strip()
+
+    if monto_str and concepto_str:
         # Buscar el concepto en nuestro diccionario de categorías
         for categoria, palabras in CATEGORIAS_DICT.items():
             if concepto_str in palabras:
@@ -91,7 +99,7 @@ def try_fast_path(text: str, message_id: str) -> ParseResult | None:
                     id_transaccion=message_id,
                     fecha=get_local_date(),
                     tipo=TipoTransaccion.GASTO,
-                    monto=Decimal(monto_str),
+                    monto=Decimal(monto_str.replace(',', '.')),
                     concepto=concepto_str.capitalize(),
                     categoria=categoria,
                     metodo=MetodoPago.DEBITO,
@@ -373,13 +381,15 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
     hoy_date = get_local_date()
     hoy = hoy_date.isoformat()
 
+    bot_context = os.getenv("BOT_CONTEXT", "Chile, usando pesos chilenos sin decimales.")
+
     prompt_router = f"""
     Hoy es {hoy} ({hoy_date.strftime('%A')}).
-    Eres el clasificador del motor analítico financiero de una persona en Chile.
+    Eres el clasificador del motor analítico financiero de una persona con contexto geográfico y de vida: {bot_context}.
     Analiza la pregunta del usuario y extrae los parámetros de búsqueda con máxima flexibilidad semántica:
 
     1. 'intent':
-       - 'busqueda_especifica': consultas sobre un concepto, actividad, comercio o ítem específico (ej: almuerzo, almorzando, uber, super, helado, sushi, bencina, cervezas).
+       - 'busqueda_especifica': consultas sobre un concepto, actividad, comercio o ítem específico (ej: almuerzo, almorzando, uber, super, helado, sushi, bencina/gasolina, cervezas).
        - 'gasto_total': suma general o de una categoría completa sin concepto puntual (ej: 'cuánto gasté este mes', 'cuánto gasté en transporte').
        - 'gasto_promedio': promedio por día o período (ej: 'cuánto gasto al día').
        - 'desglose_categoria': desglose o ranking de gastos por categoría.
@@ -388,11 +398,11 @@ def responder_consulta_natural(pregunta: str, transacciones: list[dict]) -> str:
        - 'conteo': cantidad de veces o frecuencia (ej: 'cuántas veces pedí delivery', 'cuántas veces fui al cine').
 
     2. Regla Crucial de Lematización en 'terminos_busqueda':
-       Para cualquier búsqueda de concepto o actividad, genera una lista exhaustiva de sinónimos, sustantivos y lemas:
+       Para cualquier búsqueda de concepto o actividad, genera una lista exhaustiva de sinónimos, sustantivos y lemas adaptados al contexto del usuario ({bot_context}):
        - Si el usuario usa un verbo o gerundio (ej: 'almorzando', 'almorzar'), incluye ['almuerzo', 'almorzar', 'almorzando', 'casino', 'menu', 'colacion', 'lunch'].
-       - Si dice 'tomando', 'carreteando' o 'saliendo' -> ['carrete', 'bar', 'cerveza', 'copete', 'fiesta', 'junta'].
-       - Si dice 'viajando' o 'moviéndome' -> ['uber', 'didi', 'cabify', 'metro', 'bip', 'pasaje', 'viaje', 'taxi'].
-       - Si dice 'super' o 'comprando comida' -> ['super', 'supermercado', 'lider', 'jumbo', 'tottus', 'santa isabel', 'unimarc'].
+       - Si dice 'tomando', 'carreteando' o 'saliendo' -> sinónimos de fiesta, bares o copas ['carrete', 'bar', 'cerveza', 'copete', 'fiesta', 'junta', 'cañas', 'copas'].
+       - Si dice 'viajando' o 'moviéndome' -> apps de movilidad y transporte público ['uber', 'didi', 'cabify', 'metro', 'bip', 'pasaje', 'viaje', 'taxi', 'bus', 'tren'].
+       - Si dice 'super' o 'comprando comida' -> términos generales y cadenas de supermercados pertinentes según el contexto ({bot_context}) (ej. en Chile: lider, jumbo, unimarc; en Bélgica/Europa: carrefour, delhaize, colruyt, aldi, lidl; más términos como super, supermercado).
        - En 'concepto_objetivo', pon el sustantivo canónico en mayúscula inicial (ej: 'Almuerzo', 'Uber', 'Supermercado', 'Bencina').
 
     3. Rango de Fechas:
@@ -702,6 +712,10 @@ def generar_comentario_ironico(
     
     bot_context = os.getenv("BOT_CONTEXT", "Chile, usando pesos chilenos sin decimales.")
     bot_tone = os.getenv("BOT_TONE", "crítico y fiscalizador, pero constructivo y amable, con una personalidad buena para los chistes y liviana")
+    bot_persona_role = os.getenv("BOT_PERSONA_ROLE")
+    bot_regional_style = os.getenv("BOT_REGIONAL_STYLE")
+    currency_symbol = os.getenv("CURRENCY_SYMBOL", "$")
+    currency_decimals = os.getenv("CURRENCY_DECIMALS", "0")
 
     if temperature is None:
         try:
@@ -722,23 +736,62 @@ def generar_comentario_ironico(
     if es_anomalo:
         anomalia_str = "\n🚨 ¡ALERTA ANOMALÍA! Con este último registro, el usuario acaba de gastar mucho más de lo que gasta normalmente en un mes en esta categoría (superó su promedio histórico + 50%). Céntrate en esto: dale una ADVERTENCIA SERIA. No uses humor burlón para esta alerta, sé más constructivo pero mantén tu rol de fiscalizador.\n"
 
+    # 1. Definición del rol/persona
+    if bot_persona_role:
+        role_desc = bot_persona_role
+    elif "chile" in bot_context.lower():
+        role_desc = f"Eres un amigo/a chileno/a cercano/a {bot_tone} que acompaña al usuario fiscalizando sus finanzas con humor, y empatía crítica adecuada a su contexto."
+    else:
+        role_desc = f"Eres un amigo/a cercano/a {bot_tone} que acompaña al usuario fiscalizando sus finanzas con humor, y empatía crítica adecuada a su contexto."
+
+    # 2. Definición del vocabulario y modismos
+    if bot_regional_style:
+        estilo_regional = (
+            f"ESTILO REGIONAL Y VOCABULARIO:\n"
+            f"{bot_regional_style}\n"
+        )
+    elif "chile" in bot_context.lower():
+        estilo_regional = (
+            "LENGUAJE Y VOCABULARIO CHILENO\n"
+            "- Habla como un amigo/a chileno/a real con naturalidad, evitando un vocabulario forzado, sin saturar con modismos.\n"
+            "- Usa modismos chilenos naturales y limpios: 'lucas', 'gustito', 'flojera' o 'lata', 'micro', 'andar pato', 'salir salado', 'ojo al charqui', 'bajón', 'hacerse el larry', 'ya fue', 'filo', 'la dura', 'el pique', 'el taco'.\n"
+            "- PROHIBIDO el vocabulario neutro de doblaje o foráneo: nada de 'pereza','subte', 'chaval', 'lana', 'plática', 'pana', 'nevera' ni 'ordenador'.\n"
+            "- Usa entonación chilena relajada y cotidiana (ej: 'buena po', 'la hiciste corta', 'igual aperraste', 'mañana toca compensar', entre otros).\n"
+        )
+    else:
+        estilo_regional = (
+            "ESTILO Y VOCABULARIO:\n"
+            "- Habla en español cotidiano, natural y cercano, adecuado al contexto geográfico del usuario sin usar modismos forzados ni jergas que no correspondan a su entorno.\n"
+        )
+
+    # 3. Sentido de proporción económica
+    if "chile" in bot_context.lower() and currency_decimals == "0" and currency_symbol == "$":
+        proporcion_economica = (
+            "SENTIDO DE PROPORCIÓN ECONÓMICA (CLP):\n"
+            "- Micro-gasto (< $5.000): Cosas cotidianas (café, snack, pasaje). Tómatelo con total normalidad; una broma simpática sobre los pequeños placeres diarios.\n"
+            "- Gasto habitual / moderado ($5.000 - $30.000): Salidas, comida rica, regalos piola, farmacia. Dinero estándar. Reconoce el gusto o la ocasión y tira una broma ligera de apoyo.\n"
+            "- Gasto medio ($30.000 - $80.000): Salida especial, compras mayores. Bromea con estilo sobre darse lujos de magnate, deseándole que lo disfrute al máximo.\n"
+            "- Gasto fuerte (> $80.000): Compras importantes. Aquí sí cabe un recordatorio amistoso de fiscalizador atento para sugerir cuidar la billetera en lo que queda de mes, pero siempre con afecto y humor.\n"
+        )
+    else:
+        proporcion_economica = (
+            f"SENTIDO DE PROPORCIÓN ECONÓMICA ({currency_symbol}):\n"
+            f"Evalúa la escala del gasto de acuerdo al contexto monetario ({bot_context}):\n"
+            f"- Micro-gasto (ej: < 5 {currency_symbol}): Cosas cotidianas (café, snack, pasaje simple). Tómatelo con total normalidad y simpatía.\n"
+            f"- Gasto habitual / moderado (ej: 5 - 30 {currency_symbol}): Comida diaria, compras estándar de supermercado, salidas simples. Dinero estándar.\n"
+            f"- Gasto medio (ej: 30 - 80 {currency_symbol}): Salida especial, compras mayores o cena elaborada.\n"
+            f"- Gasto fuerte (ej: > 80 {currency_symbol}): Compras importantes o lujos. Aquí cabe un recordatorio amistoso y atento de fiscalizador para cuidar el presupuesto.\n"
+        )
+
     system_instruction = (
-        f"Eres un amigo/a chileno/a cercano/a {bot_tone} que acompaña al usuario fiscalizando sus finanzas con humor, y empatía crítica adecuada a su contexto.\n"
+        f"{role_desc}\n"
         f"Contexto geográfico y monetario: {bot_context}\n\n"
-        "LENGUAJE Y VOCABULARIO CHILENO\n"
-        "- Habla como un amigo/a chileno/a real con naturalidad, evitando un vocabulario forzado, sin saturar con modismos.\n"
-        "- Usa modismos chilenos naturales y limpios: 'lucas', 'gustito', 'flojera' o 'lata', 'micro', 'andar pato', 'salir salado', 'ojo al charqui', 'bajón', 'hacerse el larry', 'ya fue', 'filo', 'la dura', 'el pique', 'el taco'.\n"
-        "- PROHIBIDO el vocabulario neutro de doblaje o foráneo: nada de 'pereza','subte', 'chaval', 'lana', 'plática', 'pana', 'nevera' ni 'ordenador'.\n"
-        "- Usa entonación chilena relajada y cotidiana (ej: 'buena po', 'la hiciste corta', 'igual aperraste', 'mañana toca compensar', entre otros).\n\n"
+        f"{estilo_regional}\n"
         "FILOSOFÍA Y ESPÍRITU DEL BOT:\n"
         "- Tu objetivo es acompañar al usuario con un toque de humor pícaro y entretenido, NUNCA hacerlo sentir culpable, tacaño o mal por gastar su propia plata. Puedes ser crítico pero siempre con empatía.\n"
         "- Valida las cosas lindas y humanas: si el gasto es una celebración (como un logro académico, cumpleaños, aniversario, etc.), un regalo a un ser querido, un gusto bien ganado o un momento para compartir, ¡celébralo con alegría y buena onda! Sin olvidar el rol fiscalizador\n"
-        "- Critica los gastos excesivos, evitables o cómodos con ironía y humor. No seas complaciente con el usuario pero no lo hagas sentirse mala persona.\n"
-        "SENTIDO DE PROPORCIÓN ECONÓMICA (CLP):\n"
-        "- Micro-gasto (< $5.000): Cosas cotidianas (café, snack, pasaje). Tómatelo con total normalidad; una broma simpática sobre los pequeños placeres diarios.\n"
-        "- Gasto habitual / moderado ($5.000 - $30.000): Salidas, comida rica, regalos piola, farmacia. Dinero estándar. Reconoce el gusto o la ocasión y tira una broma ligera de apoyo.\n"
-        "- Gasto medio ($30.000 - $80.000): Salida especial, compras mayores. Bromea con estilo sobre darse lujos de magnate, deseándole que lo disfrute al máximo.\n"
-        "- Gasto fuerte (> $80.000): Compras importantes. Aquí sí cabe un recordatorio amistoso de fiscalizador atento para sugerir cuidar la billetera en lo que queda de mes, pero siempre con afecto y humor.\n\n"
+        "- Critica los gastos excesivos, evitables o cómodos con ironía y humor. No seas complaciente con el usuario pero no lo hagas sentirse mala persona.\n\n"
+        f"{proporcion_economica}\n"
         "REGLAS ESTRICTAS DE ESTILO:\n"
         "1. EVITAR hacer sentir culpable o mal al usuario (NADA de decir que 'botó la plata', que 'sus ahorros lo odian' o juzgarlo con dureza). Sé el amigo bueno para la talla pero fiscalizador y que incentiva el ahorro.\n"
         "2. PROHIBIDO el lenguaje soez, vulgar o con garabatos (NADA de 'mierda', 'aweonao', etc.). Mantén el humor pícaro, cálido, liviano y chispeante.\n"

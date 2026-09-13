@@ -105,6 +105,7 @@ async def test_tendencias_fallback_when_past_mtd_is_zero():
 
     with patch.object(main.sheets_client, "get_month_summary", side_effect=mock_summary), \
          patch("src.models.get_local_date", return_value=date(2026, 9, 4)), \
+         patch("src.main.get_local_date", return_value=date(2026, 9, 4)), \
          patch("src.main.enviar_mensaje_telegram", side_effect=mock_enviar):
 
         await main.process_telegram_update(chat_id="12345", text="/tendencias", message_id="m1")
@@ -149,6 +150,7 @@ async def test_tendencias_first_month_notice():
 
     with patch.object(main.sheets_client, "get_month_summary", side_effect=mock_summary), \
          patch("src.models.get_local_date", return_value=date(2026, 9, 4)), \
+         patch("src.main.get_local_date", return_value=date(2026, 9, 4)), \
          patch("src.main.enviar_mensaje_telegram", side_effect=mock_enviar):
 
         await main.process_telegram_update(chat_id="12345", text="/tendencias", message_id="m2")

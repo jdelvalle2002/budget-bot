@@ -6,6 +6,7 @@ agotamiento del presupuesto y el margen seguro diario restante para cada categor
 
 from dataclasses import dataclass
 from decimal import Decimal
+import os
 import calendar
 from datetime import date
 from typing import Optional
@@ -68,8 +69,9 @@ def compute_category_pacing(
         burn_ratio = 0.0 if gasto_neto <= 0 else 1.0
 
     # Proyección lineal a fin de mes
+    decimals = int(os.getenv("CURRENCY_DECIMALS", "0"))
     if tau > 0 and gasto_neto > 0:
-        proyeccion = Decimal(str(round(float(gasto_neto) / tau, 0)))
+        proyeccion = Decimal(str(round(float(gasto_neto) / tau, decimals)))
     else:
         proyeccion = gasto_neto if gasto_neto > 0 else Decimal(0)
 

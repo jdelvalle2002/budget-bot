@@ -56,12 +56,31 @@ def parse_flexible_date(fecha_val: str | date | datetime | None) -> date | None:
 
     return None
 
-def format_currency(monto: Decimal) -> str:
+def format_currency(monto: Decimal | float | int) -> str:
     symbol = os.getenv("CURRENCY_SYMBOL", "$")
     decimals = int(os.getenv("CURRENCY_DECIMALS", "0"))
-    if monto < 0:
-        return f"-{symbol}{abs(monto):,.{decimals}f}"
-    return f"{symbol}{monto:,.{decimals}f}"
+    position = os.getenv("CURRENCY_POSITION", "prefix").strip().lower()
+    dec_sep = os.getenv("CURRENCY_DECIMAL_SEP", ".")
+    thousands_sep = os.getenv("CURRENCY_THOUSANDS_SEP", ",")
+
+    is_negative = monto < 0
+    abs_monto = abs(monto)
+
+    if decimals > 0:
+        raw_str = f"{abs_monto:,.{decimals}f}"
+        int_part, dec_part = raw_str.split(".", 1)
+        int_part = int_part.replace(",", thousands_sep)
+        val_str = f"{int_part}{dec_sep}{dec_part}"
+    else:
+        raw_str = f"{abs_monto:,.0f}"
+        val_str = raw_str.replace(",", thousands_sep)
+
+    if position == "suffix":
+        sign = "-" if is_negative else ""
+        return f"{sign}{val_str} {symbol}"
+    else:
+        sign = "-" if is_negative else ""
+        return f"{sign}{symbol}{val_str}"
 
 class TipoTransaccion(str, Enum):
     INGRESO = "Ingreso"
