@@ -21,6 +21,36 @@ def quitar_acentos(s: str) -> str:
         return ""
     return ''.join(c for c in unicodedata.normalize('NFD', str(s)) if unicodedata.category(c) != 'Mn')
 
+def extraer_categoria_explicita(texto: str, categorias_disponibles: list[str]) -> str | None:
+    """
+    Detecta si el mensaje contiene una asignación explícita de categoría.
+    Soporta patrones como:
+    - 'CATEGORIA Alimentación', 'categoría: Hogar', 'cat: Salud', 'cat transporte'
+    - 'categoria = Alimentación', 'cat=Alimentación'
+    
+    Retorna el nombre canónico de la categoría si coincide con alguna de categorias_disponibles, o None.
+    """
+    if not texto or not categorias_disponibles:
+        return None
+        
+    norm_to_cat = {quitar_acentos(c).lower().strip(): c for c in categorias_disponibles}
+    
+    patron = r'(?:^|[,\s])(?:categoria|categor[ií]a|cat)\s*[:=]?\s*([a-zA-ZáéíóúÁÉÍÓÚñÑ\s]+)'
+    for match in re.finditer(patron, texto, re.IGNORECASE):
+        raw_val = match.group(1).strip()
+        raw_norm = quitar_acentos(raw_val).lower()
+        
+        # 1. Match exacto
+        if raw_norm in norm_to_cat:
+            return norm_to_cat[raw_norm]
+            
+        # 2. Match por prefijo (si después de la categoría hay más texto, ej: "transporte pagado con debito")
+        for c_norm in sorted(norm_to_cat.keys(), key=len, reverse=True):
+            if re.match(rf'^{re.escape(c_norm)}(?:\b|\s|[,\.\n;]|$)', raw_norm):
+                return norm_to_cat[c_norm]
+                
+    return None
+
 # Archivo de categorías ahora es dinámico desde Google Sheets
 CATEGORIAS_DICT = {}
 if os.path.exists(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config', 'categories.json')):
@@ -34,13 +64,14 @@ class ParseResult(BaseModel):
     es_ambiguo_metodo: bool = False
     opciones_metodo: list[str] = []
 
-def try_fast_path(text: str, message_id: str) -> ParseResult | None:
+def try_fast_path(text: str, message_id: str, categorias_disponibles: list[str] | None = None) -> ParseResult | None:
     """
     Intenta parsear mensajes simples con Regex para evitar llamar al LLM.
     Ejemplos válidos:
     - "15000 uber", "2500 lider"
     - "3500 almuerzo menu casino pega", "almuerzo casino pega 4000", "3500 casino pega"
     - "3500 por planilla", "almuerzo por planilla 3500"
+    - "15000 uber cat: transporte", "25000 super categoria alimentacion"
     """
     text_clean = text.lower().strip()
     
@@ -112,6 +143,50 @@ def try_fast_path(text: str, message_id: str) -> ParseResult | None:
                     es_ambiguo_metodo=False,
                     opciones_metodo=[]
                 )
+
+    # 3. Fast-path con categoría explícita ("15000 uber cat: transporte", "25000 super lider categoria alimentacion")
+    cats_check = categorias_disponibles or list(CATEGORIAS_DICT.keys())
+    cat_explicita = extraer_categoria_explicita(text, cats_check)
+    if cat_explicita:
+        text_sin_cat = re.sub(r'(?:^|[,\s])(?:categoria|categor[ií]a|cat)\s*[:=]?\s*[a-zA-ZáéíóúÁÉÍÓÚñÑ\s]+', ' ', text_clean, flags=re.IGNORECASE).strip()
+        monto_match = re.search(r'\b(?P<monto>\d+(?:[.,]\d{1,2})?)\b', text_sin_cat)
+        if monto_match:
+            monto_val = monto_match.group('monto')
+            concepto_limpio = text_sin_cat[:monto_match.start()] + text_sin_cat[monto_match.end():]
+            concepto_limpio = re.sub(r'\s+', ' ', concepto_limpio).strip()
+            concepto_limpio = re.sub(r'^(?:en|de|por|un|una|unos|unas)\s+', '', concepto_limpio, flags=re.IGNORECASE).strip()
+            
+            # Solo aplicar si no parece un ingreso complejo de reembolso ("me transfirieron...")
+            es_ingreso = any(w in text_clean for w in ["transfirieron", "devolvieron", "reembolso", "pagaron", "abono"])
+            if concepto_limpio and not es_ingreso:
+                metodo = MetodoPago.DEBITO
+                if any(m in text_clean for m in ["credito", "crédito"]):
+                    metodo = MetodoPago.CREDITO
+                elif "efectivo" in text_clean:
+                    metodo = MetodoPago.EFECTIVO
+                elif any(m in text_clean for m in ["transferencia", "transfe"]):
+                    metodo = MetodoPago.TRANSFERENCIA
+                elif "planilla" in text_clean:
+                    metodo = MetodoPago.PLANILLA
+
+                tx = Transaction(
+                    id_transaccion=message_id,
+                    fecha=get_local_date(),
+                    tipo=TipoTransaccion.GASTO,
+                    monto=Decimal(monto_val.replace(',', '.')),
+                    concepto=concepto_limpio.capitalize(),
+                    categoria=cat_explicita,
+                    metodo=metodo,
+                    comentarios="Procesado por Fast-Path (Categoría Explícita)"
+                )
+                return ParseResult(
+                    transaction=tx,
+                    es_ambiguo=False,
+                    opciones_categoria=[],
+                    es_ambiguo_metodo=False,
+                    opciones_metodo=[]
+                )
+
     return None
 
 def get_system_prompt(categorias_disponibles: list[str]) -> str:
@@ -127,10 +202,20 @@ CONTEXTO DEL USUARIO Y MONEDA: {bot_context} (Ten muy en cuenta este contexto ge
 Reglas de negocio:
 1. 'es_transaccion': Evalúa si el texto relata un gasto o ingreso REAL Y PROPIO del usuario. Si es una historia sobre otra persona (ej. "mi amigo gastó...", "él me contó..."), una conversación general, o spam, marca esto como false.
 2. 'monto': Debe ser un número entero o decimal positivo. Infiere la magnitud correcta según el contexto. Si es un reembolso, el monto sigue siendo positivo pero el tipo cambia.
-3. 'tipo': Debe ser estrictamente "Ingreso" o "Gasto". (Si fue un Egreso, es gasto. Si dice "me pagaron", "sueldo", "reembolso", "devolución", es Ingreso).
-4. 'concepto': Breve resumen de la transacción en 1 o 2 palabras (ej. "Uber", "Cerveza", "Sueldo", "Almuerzo Casino", "Taller Pádel").
+3. 'tipo': Debe ser estrictamente "Ingreso" o "Gasto".
+   - Si fue una compra, consumo o egreso, es "Gasto".
+   - Si fue una entrada de dinero, sueldo, abono, devolución, reembolso, o transferencia recibida (incluyendo cuando alguien te paga o transfiere su parte de un gasto compartido), es "Ingreso".
+4. 'concepto': Breve resumen de la transacción en 1 o 2 palabras (ej. "Uber", "Cerveza", "Sueldo", "Almuerzo Casino", "Taller Pádel", "Ajuste Alimentación", "Aporte Hogar").
 5. 'categoria': DEBE ser EXACTAMENTE una de las siguientes opciones textuales: {categorias_disponibles}.
-   - Determina la categoría según la naturaleza de la actividad o producto consumido (ej. comida o casino -> 'Alimentación', deportes o pádel o gimnasio -> 'Deportes', consultas o farmacia -> 'Salud', pasajes o viajes -> 'Transporte').
+   - Determina la categoría según la naturaleza de la actividad o producto consumido (ej. comida o casino -> 'Alimentación', deportes o pádel o gimnasio -> 'Deportes', consultas o farmacia -> 'Salud', pasajes o viajes -> 'Transporte', cosas de la casa -> 'Hogar').
+   - REGLA CRÍTICA DE NETEO CONTABLE (REEMBOLSOS, APORTES Y COMPENSACIÓN DE GASTOS COMPARTIDOS):
+     Si el usuario registra una entrada de dinero o transferencia que corresponde a un reembolso, devolución, ajuste de cuentas con roomie/amigos/pareja o cobro de una compra compartida (ejemplos directos: "me transfirieron 28k que me debían de gastos de alimentación", "mi roomie me transfirió 30k de cosas del hogar", "me devolvieron 10 lucas del super", "mi amigo me pagó su parte del uber", "transferencia de la cuota del asado"):
+     * 'tipo': DEBE ser estrictamente "Ingreso".
+     * 'categoria': DEBE ser la categoría del gasto que se está compensando (ej. 'Alimentación', 'Hogar', 'Cuentas Básicas', 'Transporte', 'Salidas').
+     * NUNCA clasifiques estos reembolsos o transferencias como 'Otros Ingresos' ni 'Remuneraciones'. En nuestro sistema financiero, registrar un ingreso en una categoría de gasto netea automáticamente el total gastado de esa categoría en los resúmenes y presupuestos.
+     * Reserva 'Remuneraciones' exclusivamente para sueldo laboral / honorarios formales, y 'Otros Ingresos' solo para ingresos que no guarden relación con ningún gasto previo ni reembolso.
+   - REGLA DE CATEGORÍA EXPLÍCITA:
+     Si el texto contiene una indicación explícita de categoría como 'CATEGORIA xxxxx', 'categoría: xxxxx', 'cat: xxxxx' o similar, DEBES respetar y asignar esa categoría exactamente (emparejándola con la opción correspondiente en {categorias_disponibles}) y marcar 'es_ambiguo'=false.
    - OJO: NUNCA fuerces 'Alimentación' solo porque el método sea 'Planilla'. La categoría depende del bien o servicio adquirido.
 6. 'metodo': Debe ser "Débito", "Crédito", "Efectivo", "Transferencia", "Planilla", o "Otro".
    - Por defecto, si el usuario no menciona método de pago en compras cotidianas, asume "Débito".
@@ -177,7 +262,7 @@ def parse_transaction_message(text: str, message_id: str, categorias_disponibles
         ]
 
     # 1. Intentar Vía Rápida (Ahorra LLM)
-    fast_result = try_fast_path(text, message_id)
+    fast_result = try_fast_path(text, message_id, categorias_disponibles=categorias_disponibles)
     if fast_result:
         logger.info(f"FAST-PATH ACTIVADO para el mensaje (ID: {message_id})")
         return fast_result
@@ -226,6 +311,13 @@ def parse_transaction_message(text: str, message_id: str, categorias_disponibles
             fecha=fecha_tx,
             **extracted_data
         )
+
+        # 3. Forzar categoría explícita si el usuario la especificó textualmente
+        cat_explicita = extraer_categoria_explicita(text, categorias_disponibles)
+        if cat_explicita:
+            tx.categoria = cat_explicita
+            es_ambiguo = False
+            opciones_categoria = []
         
         return ParseResult(
             transaction=tx,
@@ -683,6 +775,15 @@ ANGULOS_COMICOS = [
     "Optimismo financiero relajado (bromear con eventual futura suerte en el azar o lotería y que lo importante es el equilibrio general, no privarse de todo en la vida)."
 ]
 
+def are_comments_enabled() -> bool:
+    """Verifica si los comentarios humorísticos del bot están habilitados vía variable de entorno.
+    
+    Por defecto está habilitado ('true'). Se puede desactivar con valores como 'false', '0', 'no', 'off'.
+    Soporta ENABLE_BOT_COMMENTS y BOT_ENABLE_COMMENTS.
+    """
+    val = os.getenv("ENABLE_BOT_COMMENTS", os.getenv("BOT_ENABLE_COMMENTS", "true")).strip().lower()
+    return val not in ("false", "0", "no", "off", "disable", "disabled")
+
 def generar_comentario_ironico(
     monto: Decimal,
     concepto: str,
@@ -704,6 +805,9 @@ def generar_comentario_ironico(
         temperature: Temperatura para controlar creatividad (default: lee GEMINI_TEMPERATURE o 0.9).
         angulo: Enfoque cómico específico opcional. Si es None, se escoge uno con probabilidad 0.75 (el 25% se omite).
     """
+    if not are_comments_enabled():
+        return ""
+
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         return ""

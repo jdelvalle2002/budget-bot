@@ -82,6 +82,17 @@ Para que Telegram muestre el menú desplegable de autocompletado de comandos al 
 2. Envía el comando `/setcommands` y selecciona tu bot.
 3. Pega la lista de comandos oficial detallada en [docs/botfather_commands.md](docs/botfather_commands.md).
 
+### 5. Ejecutar Pruebas (Tests)
+La suite completa de tests está organizada en el directorio `tests/`:
+```bash
+# Ejecutar todas las pruebas con pytest
+pytest
+
+# O mediante python:
+python -m pytest
+```
+Para detalles sobre la estructura de pruebas y herramientas CLI, consulta [tests/README.md](tests/README.md).
+
 ---
 
 ## Próximas Mejoras (Roadmap / TODO)

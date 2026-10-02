@@ -312,14 +312,16 @@ async def finalizar_guardado_transaccion(chat_id: str, session, tx: Transaction,
                         elif acumulado >= presupuesto * 0.8:
                             estado_presupuesto = f"Lleva gastado {format_currency(acumulado)} en el mes, y su límite es {format_currency(presupuesto)}. ¡Está peligrosamente cerca!"
         
-        from src.parser import generar_comentario_ironico
-        chiste = generar_comentario_ironico(
-            tx.monto, 
-            tx.concepto, 
-            tx.categoria,
-            estado_presupuesto=estado_presupuesto,
-            es_anomalo=es_anomalo
-        )
+        chiste = ""
+        from src.parser import are_comments_enabled, generar_comentario_ironico
+        if are_comments_enabled():
+            chiste = generar_comentario_ironico(
+                tx.monto, 
+                tx.concepto, 
+                tx.categoria,
+                estado_presupuesto=estado_presupuesto,
+                es_anomalo=es_anomalo
+            )
         
         msg_exito = (
             f"✅ Registrado exitosamente:\n"
@@ -370,13 +372,70 @@ async def process_telegram_callback(chat_id: str, callback_data: str):
         session.state = UserState.AWAITING_EDIT
         session.edit_transaction_id = tx_id
         
+        reply_markup = {
+            "inline_keyboard": [
+                [
+                    {"text": "🏷️ Cambiar Categoría", "callback_data": f"edit_cat:{tx_id}"}
+                ],
+                [
+                    {"text": "🚫 Cancelar", "callback_data": "cancel"}
+                ]
+            ]
+        }
         instrucciones = (
             "✏️ *Modo Edición Activado*\n\n"
-            "Escribe la corrección como si fuera un gasto nuevo.\n"
-            "Ejemplo: si te equivocaste en el monto, escribe _'fueron 12000 en uber en verdad'_.\n\n"
-            "Yo actualizaré el registro original."
+            "• Toca *🏷️ Cambiar Categoría* para cambiarla directamente con botones.\n"
+            "• O escribe la corrección en lenguaje natural (ej: _'fueron 12000 en uber'_ o _'CATEGORIA Alimentación'_).\n\n"
+            "_(Usa /cancelar para descartar cambios)_"
         )
-        await enviar_mensaje_telegram(chat_id, instrucciones)
+        await enviar_mensaje_telegram(chat_id, instrucciones, reply_markup=reply_markup)
+
+    elif callback_data.startswith("edit_cat:"):
+        tx_id = callback_data.split(":")[1]
+        session.edit_transaction_id = tx_id
+        categories = sheets_client.load_categories_from_config() if sheets_client else {}
+        if not categories:
+            from src.parser import CATEGORIAS_DICT
+            categories_list = list(CATEGORIAS_DICT.keys()) if CATEGORIAS_DICT else [
+                "Alimentación", "Transporte", "Salidas", "Hogar", "Cuentas Básicas", 
+                "Salud", "Educación", "Otros Gastos", "Remuneraciones", "Otros Ingresos"
+            ]
+        else:
+            categories_list = sorted(categories.keys())
+
+        keyboard = []
+        row = []
+        for cat in categories_list:
+            row.append({"text": cat, "callback_data": f"set_cat:{tx_id}:{cat}"})
+            if len(row) == 2:
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
+        keyboard.append([{"text": "🚫 Cancelar", "callback_data": "cancel"}])
+        
+        msg = "🏷️ *Selecciona la nueva categoría para este registro:*"
+        await enviar_mensaje_telegram(chat_id, msg, reply_markup={"inline_keyboard": keyboard})
+
+    elif callback_data.startswith("set_cat:"):
+        parts = callback_data.split(":", 2)
+        tx_id = parts[1]
+        nueva_cat = parts[2]
+        
+        success = sheets_client.update_transaction_category(tx_id, nueva_cat) if sheets_client else False
+        session.state = UserState.IDLE
+        session.edit_transaction_id = None
+        
+        if success:
+            await enviar_mensaje_telegram(
+                chat_id, 
+                f"✅ Categoría actualizada exitosamente a *{nueva_cat}*."
+            )
+        else:
+            await enviar_mensaje_telegram(
+                chat_id, 
+                f"❌ Error al intentar actualizar la categoría en Google Sheets. Puede que el registro ya no exista."
+            )
 
     elif callback_data.startswith("cat:"):
         cat_elegida = callback_data.split(":", 1)[1]
@@ -584,9 +643,36 @@ async def process_telegram_update(chat_id: str, text: str, message_id: str):
 
     # --- FLUJO 2: EDITANDO UNA TRANSACCIÓN (TEXTO LIBRE) ---
     if session.state == UserState.AWAITING_EDIT:
+        from src.parser import quitar_acentos, extraer_categoria_explicita
+        categorias_list = list(sheets_client.load_categories_from_config().keys()) if sheets_client else []
+        
+        # 1. Verificar si el usuario escribió directamente solo la categoría (ej: "Alimentación" o "CATEGORIA Alimentación")
+        texto_strip = text.strip()
+        cat_directa = None
+        
+        cat_match = extraer_categoria_explicita(texto_strip, categorias_list)
+        if cat_match:
+            resto = re.sub(r'^(?:categoria|categor[ií]a|cat)\s*[:=]?\s*', '', texto_strip, flags=re.IGNORECASE).strip()
+            if quitar_acentos(resto).lower() == quitar_acentos(cat_match).lower():
+                cat_directa = cat_match
+        else:
+            for c in categorias_list:
+                if quitar_acentos(c).lower() == quitar_acentos(texto_strip).lower():
+                    cat_directa = c
+                    break
+
+        if cat_directa and session.edit_transaction_id:
+            success = sheets_client.update_transaction_category(session.edit_transaction_id, cat_directa) if sheets_client else False
+            session.state = UserState.IDLE
+            session.edit_transaction_id = None
+            if success:
+                await enviar_mensaje_telegram(chat_id, f"✅ Categoría actualizada exitosamente a *{cat_directa}*.")
+            else:
+                await enviar_mensaje_telegram(chat_id, "❌ Error al intentar actualizar la categoría en Google Sheets.")
+            return
+
         try:
             # Parseamos usando el ID antiguo para sobrescribir
-            categorias_list = list(sheets_client.load_categories_from_config().keys()) if sheets_client else []
             parse_result = parse_transaction_message(text, message_id=session.edit_transaction_id, categorias_disponibles=categorias_list)
             
             if parse_result.es_ambiguo and parse_result.opciones_categoria:

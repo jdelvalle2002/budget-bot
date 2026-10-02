@@ -12,7 +12,7 @@ from typing import List, Optional
 from dotenv import load_dotenv
 
 from src.models import format_currency
-from src.parser import parse_transaction_message, generar_comentario_ironico, ANGULOS_COMICOS
+from src.parser import parse_transaction_message, generar_comentario_ironico, ANGULOS_COMICOS, are_comments_enabled
 
 # Cargar variables de entorno locales
 load_dotenv()
@@ -220,12 +220,16 @@ def main():
     print("\n" + "=" * 60)
     print("  💬 GENERACIÓN DE COMENTARIOS")
     print("=" * 60)
+    comments_active = are_comments_enabled()
+    print(f"Comentarios activos: {'✅ Sí (habilitados)' if comments_active else '❌ No (deshabilitados por ENABLE_BOT_COMMENTS=false)'}")
     print(f"Tono configurado:    {os.getenv('BOT_TONE', 'crítico, constructivo y manteniendo un toque humorístico y con sarcasmo y/o ironía')}")
     print(f"Contexto configurado:{os.getenv('BOT_CONTEXT', 'Chile, usando pesos chilenos sin decimales.')}")
     if args.anomalo:
         print("Alerta:              🚨 ANOMALÍA ACTIVADA")
     if estado_presupuesto:
         print(f"Presupuesto:         ⚠️ {estado_presupuesto}")
+    if not comments_active:
+        print("⚠️ AVISO: ENABLE_BOT_COMMENTS está configurado en 'false'. Los comentarios se omitirán.")
     print("-" * 60)
 
     if args.all_angles:

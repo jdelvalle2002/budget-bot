@@ -8,7 +8,9 @@ import random
 load_dotenv()
 
 import sys
+import pytest
 
+@pytest.mark.skip(reason="Manual integration test requiring live Google Sheets and Gemini credentials. Run directly with python.")
 def test_flujo():
     print("1. Probando el Parser con Inteligencia Artificial (Gemini)...")
     mensajes = [

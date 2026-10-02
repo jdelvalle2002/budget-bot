@@ -47,7 +47,9 @@ def test_sheets_client_summary_logic():
     client.sheet = MagicMock()
     client.sheet.values.return_value = mock_values_resource
     
-    res, t_month, t_year = client.get_month_summary(month_offset=0)
+    from datetime import date
+    with patch("src.models.get_local_date", return_value=date(2026, 9, 15)):
+        res, t_month, t_year = client.get_month_summary(month_offset=0)
     
     alim = res["Alimentación"]
     trans = res["Transporte"]

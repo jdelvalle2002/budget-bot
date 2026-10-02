@@ -148,6 +148,38 @@ class GoogleSheetsClient:
             logger.error(f"Error al actualizar la fila {row_index}: {e}")
             return False
 
+    def update_transaction_category(self, id_transaccion: str, nueva_categoria: str, sheet_name: str = None) -> bool:
+        """Actualiza únicamente la columna de Categoría (columna F) de una transacción existente."""
+        if not sheet_name:
+            from src.models import get_local_date
+            sheet_name = str(get_local_date().year)
+            
+        row_index = self._find_row_index(id_transaccion, sheet_name)
+        if row_index == -1:
+            from src.models import get_local_date
+            prev_year = str(get_local_date().year - 1)
+            row_index = self._find_row_index(id_transaccion, prev_year)
+            if row_index != -1:
+                sheet_name = prev_year
+            else:
+                logger.error(f"No se encontró la transacción {id_transaccion} para actualizar categoría.")
+                return False
+            
+        try:
+            body = {'values': [[nueva_categoria]]}
+            range_name = f"{sheet_name}!F{row_index}"
+            self.sheet.values().update(
+                spreadsheetId=self.spreadsheet_id,
+                range=range_name,
+                valueInputOption='USER_ENTERED',
+                body=body
+            ).execute()
+            logger.info(f"Categoría de transacción {id_transaccion} actualizada a '{nueva_categoria}' en fila {row_index}.")
+            return True
+        except Exception as e:
+            logger.error(f"Error al actualizar categoría en fila {row_index}: {e}")
+            return False
+
     def append_multiple_transactions(self, transactions: list, sheet_name: str = None) -> bool:
         """Añade múltiples transacciones de una sola vez."""
         if not transactions:
